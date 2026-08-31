@@ -39,6 +39,8 @@ full threat model. This file is about building/changing the tool itself.
    want and usually isn't. Always confirm the `repo` path the startup
    banner prints matches what you expect before trusting anything that
    follows.
+5. You **MUST NOT** write any code comments
+6. You **MUST** strive to write code with **low cyclomatic complexity**
 
 ## Architecture
 
@@ -256,6 +258,30 @@ src/assets/geist-pixel.woff2              bundled UI font for widget.js/shell.ht
   Font Name, which is the only reason this modified build may keep the
   "Geist Pixel" family name — check that again if you ever re-derive it
   from a different upstream release.
+
+## The landing page (`site/`)
+
+`site/` is the public landing page (GitHub Pages, deployed by
+`.github/workflows/site.yml`). Ground rules:
+
+- **It is not part of the package.** `package.json`'s `files` whitelist
+  excludes it by construction; keep it that way. Nothing in `src/` may ever
+  reference `site/`, and the daemon must never serve anything from it.
+- **No build step, no dependencies** — same rule as the rest of the repo.
+  It's one hand-written `index.html`; the "animation" is a CSS-scene state
+  machine driven by ~60 lines of inline JS.
+- **`site/geist-pixel.woff2` is a deliberate copy** of the asset in
+  `src/assets/`, with its OFL license file beside it (hosting a web font is
+  redistribution, so the notice must travel with it — the deploy workflow
+  enforces this). Don't "deduplicate" the copy with a symlink or build
+  step; if the font is regenerated, update both copies.
+- **The demo is a mock and must stay one.** It stubs the widget/shell
+  visuals so the preview matches what users later see, but it must never
+  load the real `widget.js` — the widget hard-exits on non-loopback pages
+  by design, and the mock exists precisely because of that.
+- The page mirrors the widget/shell look (tokens copied from
+  `shell.html`'s `:root`). If the product UI's palette or the logo mark
+  changes, the site is a second place to update.
 
 ## Testing
 
