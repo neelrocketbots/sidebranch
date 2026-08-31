@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sidebranch — worktree visual diffing</title>
+<meta name="description" content="Review PRs from inside your running app: switch branches from an in-page widget and compare worktrees side by side. Loopback-only, zero dependencies.">
+<!-- Same mark + favicon as src/assets/shell.html -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23191919'/%3E%3Cpath fill='%23fff' transform='translate(14.85 14.85) scale(0.7)' d='M45 11C50.5228 11 55 15.4772 55 21V39H40C34.4772 39 30 43.4772 30 49V78C30 83.5228 34.4772 88 40 88H26C20.4772 88 16 83.5228 16 78V21C16 15.4772 20.4772 11 26 11H45ZM73 39C78.5228 39 83 43.4772 83 49V78C83 83.5228 78.5228 88 73 88H45C50.5228 88 55 83.5228 55 78V39H73Z'/%3E%3C/svg%3E">
+<style>
+/* Geist Pixel is OFL 1.1, not MIT — see ./geist-pixel.LICENSE.txt (linked in
+   the footer). Same modified build the daemon serves; hosted here because a
+   CDN link would be a live dependency, and this repo doesn't do those. */
+@font-face{
+  font-family:"Geist Pixel";
+  src:url("./geist-pixel.woff2") format("woff2");
+  font-display:swap;
+}
+
+/* ---- tokens: lifted verbatim from src/assets/shell.html ---- */
+:root{
+  --bg:#191919; --surface:#222; --surface-high:#444;
+  --line:rgba(255,255,255,.11); --line-strong:rgba(255,255,255,.13);
+  --text:#d7dce2; --muted:#8a949e; --ok:#59c26f; --err:#e5534b; --busy:#e3b341;
+  --ease:cubic-bezier(0.34,0.8,0.23,0.97);
+  --card:#1f1f1f;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark;scroll-behavior:smooth}
+body{
+  background:var(--bg);color:var(--text);
+  font:14px/1.7 "Geist Pixel","Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:1px solid rgba(255,255,255,.55);outline-offset:2px;border-radius:2px}
+.wrap{max-width:780px;margin:0 auto;padding:0 24px}
+.muted{color:var(--muted)}
+
+/* ---- header ---- */
+header.top{display:flex;align-items:center;justify-content:space-between;padding:28px 0}
+.brandmark{display:flex;align-items:center;gap:10px;color:#fff}
+.top-right{display:flex;align-items:center;gap:14px}
+.top-right .ver{font-size:14px;color:var(--muted)}
+.gh{display:flex;color:var(--muted);transition:color .15s var(--ease)}
+.gh:hover{color:#fff}
+
+/* ---- hero ---- */
+.hero{padding:12vh 0 0}
+h1{font-size:28px;line-height:1.25;font-weight:400;color:#fff;letter-spacing:.01em;max-width:20ch}
+.hero .sub{margin-top:18px;max-width:46ch;color:var(--muted);line-height: 1.5;}
+.cta{display:flex;gap:12px;margin-top:34px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:9px;padding:12px 22px;border-radius:999px;
+  font-size:14px;transition:background .15s var(--ease)}
+.btn-primary{background:#e4e4e4;color:#191919}
+.btn-primary:hover{background:#fff}
+.btn-ghost{background:var(--surface);color:var(--text)}
+.btn-ghost:hover{background:var(--surface-high)}
+
+/* ================================================================
+   The animated preview. Everything inside #stage is laid out on a
+   fixed 860x540 canvas and scaled to fit; all coordinates below are
+   in that space. Scenes advance by data-scene (cursor position) and
+   cumulative .on-<scene> classes (persistent state) — see the
+   script at the bottom.
+   ================================================================ */
+.demo{margin:56px 0 0}
+#stage-wrap{position:relative;overflow:hidden;border-radius:16px;border:solid 1px var(--line);}
+#stage{width:860px;height:540px;transform-origin:top left;position:relative;
+  font-size:11px;line-height:1.4;user-select:none;pointer-events:none}
+
+.demo-ctl{display:flex;justify-content:center;margin-top:14px}
+#play{display:flex;align-items:center;gap:9px;padding:10px 20px;font-size:14px;
+  border-radius:999px;background:var(--surface);color:var(--muted);
+  transition:background .15s var(--ease),color .15s var(--ease)}
+#play:hover{color:#fff;background:var(--surface-high)}
+#play .i-pause,#play .t-pause{display:block}
+#play .i-play,#play .t-play{display:none}
+#play[aria-pressed="false"] .i-pause,#play[aria-pressed="false"] .t-pause{display:none}
+#play[aria-pressed="false"] .i-play,#play[aria-pressed="false"] .t-play{display:block}
+
+/* ---- browser chrome (light, for contrast against the dark page) ---- */
+.browser{position:absolute;inset:0;background:#f5f6f7;border-radius:10px;overflow:hidden;
+  box-shadow:0 8px 28px rgba(0,0,0,.5)}
+.b-top{height:40px;background:#e9eaec;display:flex;align-items:center;gap:8px;
+  padding:0 14px;border-bottom:1px solid #dcdee1}
+.lights{display:flex;gap:7px;margin-right:8px}
+.lights i{width:11px;height:11px;border-radius:99px;display:block}
+.lights i:nth-child(1){background:#f6635a}.lights i:nth-child(2){background:#f5bd4f}
+.lights i:nth-child(3){background:#63c554}
+.tab{display:flex;align-items:center;gap:7px;height:30px;padding:0 15px;border-radius:8px;
+  color:#6c7278;background:transparent;font-size:13px;white-space:nowrap;overflow:hidden;
+  transition:background .4s var(--ease) .18s,color .4s var(--ease) .18s}
+.tab .fav{width:8px;height:8px;border-radius:2px;background:currentColor;opacity:.5;flex:none}
+.tab.t1{background:#fff;color:#33383d;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+#tab2{max-width:0;padding:0;opacity:0;transition:max-width .55s var(--ease) .18s,
+  padding .55s var(--ease) .18s,opacity .4s var(--ease) .18s,background .4s var(--ease) .18s}
+.on-open-shell #tab2{max-width:190px;padding:0 14px;opacity:1;background:#fff;
+  color:#33383d;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.on-open-shell .tab.t1{background:transparent;color:#6c7278;box-shadow:none}
+.b-body{position:absolute;top:40px;left:0;right:0;bottom:0}
+
+/* ---- view 1: the light wireframe app ---- */
+.view{position:absolute;inset:0;transition:opacity .55s var(--ease) .18s}
+#appview{background:#fafbfc}
+.on-open-shell #appview{opacity:0}
+.wire-nav{height:44px;background:#fff;border-bottom:1px solid #e8eaec;display:flex;
+  align-items:center;gap:10px;padding:0 22px}
+.wire-nav .logo{width:18px;height:18px;border-radius:5px;background:#33383d;flex:none}
+.wnav-pill{height:9px;border-radius:99px;background:#dfe2e5}
+.wnav-pill.p1{width:52px;background:#b9bec4}.wnav-pill.p2{width:44px}.wnav-pill.p3{width:58px}
+.wnav-pill.pnew{width:0;margin-left:-10px;opacity:0;background:#8a94e8;
+  transition:width .5s var(--ease),opacity .5s var(--ease),margin .5s var(--ease)}
+.on-rebuilt .wnav-pill.pnew{width:48px;margin-left:0;opacity:1}
+.wire-nav .avatar{width:20px;height:20px;border-radius:99px;background:#dfe2e5;margin-left:auto}
+.wire-main{padding:24px 22px}
+.wl{border-radius:99px;background:#e3e6e9}
+.wire-h1{width:190px;height:14px;background:#c6cbd1;border-radius:4px}
+.wire-sub{width:280px;height:9px;margin-top:10px}
+.cards{display:flex;gap:14px;margin-top:22px}
+.wcard{width:182px;height:96px;background:#fff;border:1px solid #e8eaec;border-radius:10px;
+  padding:14px;flex:none;transition:transform .5s var(--ease)}
+.wcard .k{width:60px;height:8px}
+.wcard .v{width:90px;height:16px;background:#c6cbd1;border-radius:4px;margin-top:12px}
+.wcard .s{width:40px;height:7px;margin-top:10px;background:#daf0de}
+.wcard.new{width:0;padding:14px 0;margin-left:-14px;opacity:0;overflow:hidden;
+  border:0;background:linear-gradient(135deg,#eef0ff,#e8f6ff);
+  box-shadow:0 0 0 1px #c3c9f2,0 4px 14px rgba(120,130,240,.25);
+  transition:width .55s var(--ease),padding .55s var(--ease),margin .55s var(--ease),
+    opacity .45s var(--ease)}
+.wcard.new .k{background:#c3c9f2}.wcard.new .v{background:#8a94e8}.wcard.new .s{background:#c3c9f2}
+.on-rebuilt .wcard.new{width:182px;padding:14px;margin-left:0;opacity:1}
+.wire-chart{margin-top:22px;height:150px;background:#fff;border:1px solid #e8eaec;
+  border-radius:10px;padding:16px;display:flex;align-items:flex-end;gap:10px}
+.bar{flex:1;background:#e3e6e9;border-radius:4px 4px 0 0;transition:height .6s var(--ease),
+  background .6s var(--ease)}
+.b1{height:40%}.b2{height:65%}.b3{height:30%}.b4{height:80%}.b5{height:52%}.b6{height:68%}
+.b7{height:38%}.b8{height:58%}
+.on-rebuilt .b2{height:35%}.on-rebuilt .b3{height:70%}.on-rebuilt .b4{height:48%}
+.on-rebuilt .b6{height:88%;background:#c3c9f2}.on-rebuilt .b7{height:62%}
+
+/* ---- the widget mock (bottom-right of the app view) ----
+   Mirrors .bar/.branch-btn/.tb-icon/.flyout from src/assets/widget-core.js */
+.sb-bar{position:absolute;right:20px;bottom:18px;display:flex;align-items:center;
+  border-radius:999px;background:var(--bg);border:1px solid var(--line-strong);
+  box-shadow:0 2px 10px rgba(0,0,0,.2);padding:3px 5px;color:var(--text);font-size:14px}
+.sb-branch{display:flex;align-items:center;padding:6px;border-radius:999px}
+.sb-branch{transition:background .3s var(--ease) .18s,padding .42s var(--ease) .18s}
+.on-expand .sb-branch{padding:6px 11px;background:rgba(255,255,255,.06)}
+.sb-dot{display:flex;color:var(--ok);transition:color .3s .18s}
+.on-pick .sb-dot,.on-building .sb-dot{color:var(--busy);animation:sb-p 1s infinite}
+.on-rebuilt .sb-dot{color:var(--ok);animation:none}
+@keyframes sb-p{50%{opacity:.45}}
+.sb-name{position:relative;max-width:0;opacity:0;overflow:hidden;white-space:nowrap;
+  transition:max-width .42s var(--ease) .18s,opacity .42s var(--ease) .18s,margin .42s var(--ease) .18s}
+.on-expand .sb-name{max-width:140px;opacity:1;margin-left:7px}
+.sb-name em{font-style:normal}
+.sb-name .n2{display:none}
+.on-building .sb-name .n1{display:none}
+.on-building .sb-name .n2{display:inline}
+.sb-chev{flex:none;width:0;opacity:0;overflow:hidden;color:var(--muted);
+  transition:width .42s var(--ease) .18s,opacity .42s var(--ease) .18s,margin .42s var(--ease) .18s,
+    transform .25s var(--ease) .18s}
+.on-expand .sb-chev{width:10px;opacity:1;margin-left:4px}
+.on-fly-open .sb-chev{transform:rotate(180deg);transition-delay:.58s}
+.on-pick .sb-chev{transform:none;transition-delay:.18s}
+.sb-extra{display:grid;grid-template-columns:0fr;transition:grid-template-columns .42s var(--ease) .18s}
+.on-expand .sb-extra{grid-template-columns:1fr}
+.sb-extra>div{min-width:0;overflow:hidden;display:flex;align-items:center;gap:3px;
+  opacity:0;transition:opacity .3s .28s}
+.on-expand .sb-extra>div{opacity:1}
+.sb-icon{display:flex;align-items:center;justify-content:center;width:34px;height:34px;
+  border-radius:999px;color:var(--muted);flex:none}
+.on-to-compare .sb-icon.i-compare,.on-open-shell .sb-icon.i-compare{
+  background:rgba(255,255,255,.08);color:#fff;transition:background .15s .3s,color .15s .3s}
+.sb-sep{width:1px;height:16px;background:rgba(255,255,255,.1);margin:0 2px;flex:none}
+
+.sb-fly{position:absolute;right:20px;bottom:64px;width:260px;background:var(--bg);
+  border:1px solid var(--line-strong);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.5);
+  color:var(--text);font-size:14px;overflow:hidden;
+  opacity:0;transform:translateY(6px);transition:opacity .32s var(--ease) .18s,transform .32s var(--ease) .18s}
+.on-fly-open .sb-fly{opacity:1;transform:none;transition-delay:.58s}
+.on-pick .sb-fly{opacity:0;transform:translateY(6px);transition-delay:.18s}
+.sb-fly .hd{display:flex;align-items:center;gap:8px;padding:9px 11px;
+  border-bottom:1px solid rgba(255,255,255,.09)}
+.sb-fly .hd b{font-weight:400;color:#fff;flex:1}
+.sb-fly .hd svg{color:var(--muted)}
+.sb-fly .filter{padding:7px 11px;color:#626b74;border-bottom:1px solid rgba(255,255,255,.09)}
+.sb-row{display:flex;align-items:center;gap:8px;padding:8px 11px;color:var(--text)}
+.sb-row .chk{width:13px;color:var(--ok);flex:none;display:flex}
+.sb-row .chk svg{opacity:0}
+.sb-row.r-main .chk svg{opacity:1}
+.on-to-branch .sb-row.r-feat{background:rgba(255,255,255,.06);transition:background .15s .25s}
+.sb-row .sha{margin-left:auto;color:var(--muted);font-size:12px}
+
+/* ---- view 2: the shell mock ----
+   Mirrors .pane-hd/.frame/.dock from src/assets/shell.html */
+#shellview{background:var(--bg);opacity:0;pointer-events:none}
+.on-open-shell #shellview{opacity:1}
+.panes{position:absolute;inset:0}
+.frame{position:absolute;top:28px;left:50%;width:300px;
+  transition:width .8s var(--ease) .18s,transform .8s var(--ease) .18s,opacity .6s var(--ease) .18s}
+.frame-a{transform:translateX(calc(-50% - 159px))}
+.frame-b{transform:translateX(calc(-50% + 159px))}
+.on-drag .frame{width:220px}
+.on-drag .frame-a{transform:translateX(calc(-50% - 119px))}
+.on-drag .frame-b{transform:translateX(calc(-50% + 119px))}
+.on-drag-back .frame{width:300px}
+.on-drag-back .frame-a{transform:translateX(calc(-50% - 159px))}
+.on-drag-back .frame-b{transform:translateX(calc(-50% + 159px))}
+.on-onion .frame-a,.on-onion .frame-b{transform:translateX(-50%)}
+.on-onion .frame-b{opacity:.55}
+.pane-hd{display:flex;align-items:center;gap:8px;padding:0 6px 10px;font-size:13px;
+  transition:opacity .4s var(--ease) .18s}
+.on-onion .frame-b .pane-hd{opacity:0}
+.pane-hd .k{padding:3px 10px;border-radius:999px;color:var(--ok);
+  background:rgba(89,194,111,.12);flex:none}
+.pane-hd .bs{flex:1;display:flex;align-items:center;gap:6px;background:var(--surface);
+  border:1px solid rgba(255,255,255,.04);border-radius:7px;padding:6px 10px;
+  white-space:nowrap;overflow:hidden}
+.pane-hd .bs svg{margin-left:auto;color:var(--muted);flex:none}
+.pane-hd .sha{color:var(--muted);font-size:12px}
+.vp{height:270px;background:#fafbfc;border-radius:8px;overflow:hidden;
+  box-shadow:0 0 0 1px rgba(255,255,255,.14),0 6px 22px rgba(0,0,0,.45)}
+/* mini wireframes inside the panes (A = main, B = feat/dashboard) */
+.mini .wire-nav{height:26px;padding:0 12px;gap:6px}
+.mini .wire-nav .logo{width:11px;height:11px;border-radius:3px}
+.mini .wnav-pill{height:5px}
+.mini .wnav-pill.p1{width:26px}.mini .wnav-pill.p2{width:22px}.mini .wnav-pill.p3{width:30px}
+.mini .wnav-pill.pnew{width:24px;margin:0;opacity:1}
+.mini .wire-nav .avatar{width:12px;height:12px}
+.mini .wire-main{padding:12px}
+.mini .wire-h1{width:90px;height:8px}
+.mini .wire-sub{width:130px;height:5px;margin-top:6px}
+.mini .cards{gap:7px;margin-top:11px}
+.mini .wcard{width:78px;height:48px;padding:7px;border-radius:6px}
+.mini .wcard .k{width:28px;height:4px}
+.mini .wcard .v{width:42px;height:8px;margin-top:6px}
+.mini .wcard .s{width:20px;height:4px;margin-top:5px}
+.mini .wcard.new{width:78px;padding:7px;margin:0;opacity:1}
+.mini .wire-chart{margin-top:11px;height:64px;padding:8px;gap:5px;border-radius:6px}
+.mini .bar{border-radius:2px 2px 0 0}
+.mini .mb2{height:35%}.mini .mb3{height:70%}.mini .mb4{height:48%}
+.mini .mb6{height:88%;background:#c3c9f2}.mini .mb7{height:62%}
+
+#swapbtn{position:absolute;top:203px;left:50%;transform:translate(-50%,-50%);z-index:4;
+  width:34px;height:34px;display:flex;align-items:center;justify-content:center;
+  border-radius:999px;background:var(--surface-high);color:var(--text);
+  box-shadow:0 0 0 1px rgba(255,255,255,.14),0 4px 14px rgba(0,0,0,.4);
+  transition:opacity .3s var(--ease) .18s}
+.on-onion #swapbtn{opacity:0}
+
+.dock{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);z-index:5;
+  display:flex;align-items:center;gap:8px;background:#232323;
+  border-radius:999px;padding: 6px 12px 7px 10px;
+  box-shadow: 0 0px 12px rgba(0, 0, 0, .1);color:var(--muted);font-size:13px}
+.dock .brand{display:flex;color:#fff;padding-left:6px}
+.dock-sep{width:1px;height:16px;background:var(--line);flex:none}
+.seg{display:flex;gap:2px}
+.seg span{display:flex;align-items:center;justify-content:center;width:32px;height:32px;
+  border-radius:999px;transition:background .3s .18s,color .3s .18s}
+.seg .m-side{background:rgba(255,255,255,.1);color:#fff}
+.on-onion .seg .m-side{background:none;color:var(--muted)}
+.on-onion .seg .m-onion{background:rgba(255,255,255,.1);color:#fff}
+.w-ctl{display:flex;align-items:center;gap:6px;padding-right:4px}
+.w-val{position:relative;min-width:36px;text-align:center;color:var(--text)}
+.w-val em{font-style:normal;transition:opacity .3s}
+.w-val .w2{position:absolute;left:0;right:0;top:0;opacity:0}
+.on-drag .w-val .w1{opacity:0}
+.on-drag .w-val .w2{opacity:1}
+.on-drag-back .w-val .w1{opacity:1}
+.on-drag-back .w-val .w2{opacity:0}
+
+/* onion opacity chip, appears in onion mode */
+.onion-ctl{position:absolute;left:50%;top:348px;transform:translateX(-50%);
+  display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--line-strong);
+  border-radius:999px;padding:7px 14px;font-size:12px;color:var(--muted);
+  box-shadow:0 4px 14px rgba(0,0,0,.4);opacity:0;transition:opacity .4s var(--ease) .18s}
+.on-onion .onion-ctl{opacity:1}
+.onion-ctl .track{width:80px;height:3px;border-radius:99px;background:var(--surface-high);
+  position:relative}
+.onion-ctl .knob{position:absolute;top:50%;left:55%;transform:translate(-50%,-50%);
+  width:9px;height:9px;border-radius:99px;background:#fff}
+
+/* sidebranch UI reads at full size even after the stage scales down:
+   CSS sizing beats the svg width/height attributes */
+.sb-dot svg{width:18px;height:18px}
+.sb-icon svg{width:18px;height:18px}
+.sb-icon svg[width="13"]{width:15px;height:15px}
+.sb-fly .hd svg{width:15px;height:15px}
+.sb-row .chk svg{width:15px;height:15px}
+.pane-hd .bs svg{width:11px;height:7px}
+#swapbtn svg{width:16px;height:16px}
+.dock .brand svg{width:17px;height:17px}
+.seg span svg{width:17px;height:17px}
+.w-ctl svg{width:15px;height:15px}
+#cursor > svg{width:22px;height:22px}
+
+/* ---- the cursor ---- */
+#cursor{position:absolute;z-index:9;left:0;top:0;filter:drop-shadow(0 2px 4px rgba(0,0,0,.35));
+  transform:translate(430px,300px);transition:transform .8s var(--ease)}
+#cursor .ring{position:absolute;left:-11px;top:-11px;width:30px;height:30px;border-radius:99px;
+  border:2px solid rgba(255,255,255,.7);opacity:0;transform:scale(.4)}
+@keyframes clickring{0%{opacity:.9;transform:scale(.35)}100%{opacity:0;transform:scale(1.15)}}
+/* waypoints (860x540 space) */
+[data-scene="to-pill"] #cursor,[data-scene="expand"] #cursor{transform:translate(816px,500px)}
+[data-scene="fly-open"] #cursor{transform:translate(635px,500px)}
+[data-scene="to-branch"] #cursor,[data-scene="pick"] #cursor{transform:translate(675px,419px)}
+[data-scene="building"] #cursor,[data-scene="rebuilt"] #cursor{transform:translate(760px,455px)}
+[data-scene="to-compare"] #cursor,[data-scene="open-shell"] #cursor{transform:translate(703px,500px)}
+[data-scene="hold-shell"] #cursor{transform:translate(600px,300px)}
+[data-scene="to-handle"] #cursor{transform:translate(735px,240px)}
+[data-scene="drag"] #cursor{transform:translate(655px,240px);transition-duration:1.2s;
+  transition-timing-function:ease-in-out}
+[data-scene="drag-back"] #cursor{transform:translate(735px,240px);transition-duration:1.2s;
+  transition-timing-function:ease-in-out}
+[data-scene="to-onion"] #cursor,[data-scene="onion"] #cursor{transform:translate(410px,491px)}
+[data-scene="hold-end"] #cursor{transform:translate(520px,430px)}
+[data-scene="fade"] #cursor{transform:translate(520px,430px)}
+[data-scene="expand"] #cursor .ring,[data-scene="fly-open"] #cursor .ring,
+[data-scene="pick"] #cursor .ring,[data-scene="open-shell"] #cursor .ring,
+[data-scene="onion"] #cursor .ring{animation:clickring .55s var(--ease) .05s}
+
+/* loop seam: the stage itself only ever transitions opacity (transform is
+   the fit() scale and must never animate). .snap silences the CHILDREN only,
+   so the stage's own fade-in still runs over the freshly reset start state. */
+#stage{transition:opacity .4s var(--ease)}
+#stage[data-scene="fade"]{opacity:0}
+#stage.snap *{transition:none !important;animation:none !important}
+
+/* ---- sections below the preview ---- */
+section{padding:72px 0 0}
+h2{font-size:15px;font-weight:400;color:#fff;letter-spacing:.02em;margin-bottom:26px}
+.cards2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:560px){.cards2{grid-template-columns:1fr}}
+.getcard{background:var(--card);border-radius:12px;padding:22px;
+  display:flex;flex-direction:column;gap:10px}
+.getcard .ic{color:#fff;margin-bottom:6px}
+.getcard b{font-weight:400;color:#fff}
+.getcard p{color:var(--muted);font-size:14px;flex:1}
+pre{background:var(--card);border-radius:10px;
+  padding:16px 18px;overflow-x:auto;font-size:14px;line-height:1.75;margin:14px 0}
+pre .p{color:var(--muted)}
+pre .g{color:var(--ok)}
+pre .y{color:var(--busy)}
+pre .c{color:#626b74}
+.note{font-size:14px;color:var(--muted);margin-top:14px}
+.note a{color:var(--text);border-bottom:1px solid var(--line)}
+.note a:hover{color:#fff}
+h3{font-size:14px;font-weight:400;color:var(--text);margin:30px 0 4px}
+
+/* ---- footer ---- */
+footer{margin-top:96px;border-top:1px solid var(--line);padding:28px 0 48px;
+  font-size:14px;color:var(--muted)}
+footer .row{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+footer a{border-bottom:1px solid var(--line)}
+footer a:hover{color:#fff}
+
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  #stage *,#cursor{transition-duration:.01s !important;animation:none !important}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <a class="brandmark" href="#" aria-label="sidebranch">
+    <svg viewBox="0 0 100 100" width="20" height="20" fill="currentColor" aria-hidden="true">
+      <path d="M45 11C50.5228 11 55 15.4772 55 21V39H40C34.4772 39 30 43.4772 30 49V78C30 83.5228 34.4772 88 40 88H26C20.4772 88 16 83.5228 16 78V21C16 15.4772 20.4772 11 26 11H45ZM73 39C78.5228 39 83 43.4772 83 49V78C83 83.5228 78.5228 88 73 88H45C50.5228 88 55 83.5228 55 78V39H73Z"/>
+    </svg>
+  </a>
+  <div class="top-right">
+    <span class="ver">v0.1.0</span>
+    <a class="gh" href="https://github.com/cristobalwee/sidebranch" target="_blank" rel="noopener" aria-label="sidebranch on GitHub (opens in a new tab)">
+      <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+    </a>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <h1>Worktree visual diffing, made&nbsp;easy</h1>
+  <p class="sub">Switch back and forth between branches and visually compare UI changes
+    side by side — without ever touching your own working tree.</p>
+  <div class="cta">
+    <a class="btn btn-primary" href="#install">
+      <svg viewBox="0 0 512 512" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M188.8,255.93A67.2,67.2,0,1,0,256,188.75,67.38,67.38,0,0,0,188.8,255.93Z"/><path d="M476.75,217.79s0,0,0,.05a206.63,206.63,0,0,0-7-28.84h-.11a202.16,202.16,0,0,1,7.07,29h0a203.5,203.5,0,0,0-7.07-29H314.24c19.05,17,31.36,40.17,31.36,67.05a86.55,86.55,0,0,1-12.31,44.73L231,478.45a2.44,2.44,0,0,1,0,.27V479h0v-.26A224,224,0,0,0,256,480c6.84,0,13.61-.39,20.3-1a222.91,222.91,0,0,0,29.78-4.74C405.68,451.52,480,362.4,480,255.94A225.25,225.25,0,0,0,476.75,217.79Z"/><path d="M256,345.5c-33.6,0-61.6-17.91-77.29-44.79L76,123.05l-.14-.24A224,224,0,0,0,207.4,474.55l0-.05,77.69-134.6A84.13,84.13,0,0,1,256,345.5Z"/><path d="M91.29,104.57l77.35,133.25A89.19,89.19,0,0,1,256,166H461.17a246.51,246.51,0,0,0-25.78-43.94l.12.08A245.26,245.26,0,0,1,461.17,166h.17a245.91,245.91,0,0,0-25.66-44,2.63,2.63,0,0,1-.35-.26A223.93,223.93,0,0,0,91.14,104.34l.14.24Z"/></svg>
+      Add the extension
+    </a>
+    <a class="btn btn-ghost" href="#install">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M5 21C3.89543 21 3 20.1046 3 19V5C3 3.89543 3.89543 3 5 3H19C20.1046 3 21 3.89543 21 5V19C21 20.1046 20.1046 21 19 21H5ZM6 18V6H18V18H15V9H12V18H6Z"/></svg>
+      Install the package
+    </a>
+  </div>
+</section>
+
+<div class="demo">
+  <div id="stage-wrap">
+    <div id="stage" data-scene="idle" aria-hidden="true">
+      <div class="browser">
+        <div class="b-top">
+          <div class="lights"><i></i><i></i><i></i></div>
+          <div class="tab t1"><span class="fav"></span>localhost:4410</div>
+          <div class="tab" id="tab2"><span class="fav"></span>localhost:49400/shell</div>
+        </div>
+        <div class="b-body">
+          <!-- view 1: the app under review, light wireframe -->
+          <div class="view" id="appview">
+            <div class="wire-nav">
+              <span class="logo"></span>
+              <span class="wnav-pill p1"></span><span class="wnav-pill p2"></span>
+              <span class="wnav-pill p3"></span><span class="wnav-pill pnew"></span>
+              <span class="avatar"></span>
+            </div>
+            <div class="wire-main">
+              <div class="wire-h1"></div><div class="wl wire-sub"></div>
+              <div class="cards">
+                <div class="wcard"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+                <div class="wcard"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+                <div class="wcard"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+                <div class="wcard new"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+              </div>
+              <div class="wire-chart">
+                <div class="bar b1"></div><div class="bar b2"></div><div class="bar b3"></div>
+                <div class="bar b4"></div><div class="bar b5"></div><div class="bar b6"></div>
+                <div class="bar b7"></div><div class="bar b8"></div>
+              </div>
+            </div>
+
+            <!-- the sidebranch pill, faithful to widget-core.js -->
+            <div class="sb-fly">
+              <div class="hd"><b>Switch to</b>
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+              </div>
+              <div class="filter">Filter branches…</div>
+              <div class="sb-row r-main"><span class="chk"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6.5"/></svg></span>main<span class="sha">50ccc62</span></div>
+              <div class="sb-row r-feat"><span class="chk"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6.5"/></svg></span>feat/dashboard<span class="sha">9d81f2a</span></div>
+              <div class="sb-row"><span class="chk"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6.5"/></svg></span>fix/nav-overlap<span class="sha">c4a01be</span></div>
+            </div>
+            <div class="sb-bar">
+              <div class="sb-branch">
+                <span class="sb-dot">
+                  <svg viewBox="0 0 100 100" width="16" height="16" fill="currentColor" aria-hidden="true">
+                    <path d="M45 11C50.5228 11 55 15.4772 55 21V39H40C34.4772 39 30 43.4772 30 49V78C30 83.5228 34.4772 88 40 88H26C20.4772 88 16 83.5228 16 78V21C16 15.4772 20.4772 11 26 11H45ZM73 39C78.5228 39 83 43.4772 83 49V78C83 83.5228 78.5228 88 73 88H45C50.5228 88 55 83.5228 55 78V39H73Z"/>
+                  </svg>
+                </span>
+                <span class="sb-name"><em class="n1">main</em><em class="n2">feat/dashboard</em></span>
+                <svg class="sb-chev" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
+                  <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="sb-extra"><div>
+                <span class="sb-icon i-compare">
+                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                    <rect x="1.5" y="3" width="5.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                    <rect x="9" y="3" width="5.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                  </svg>
+                </span>
+                <span class="sb-icon">
+                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6.5 3H3.6A1.1 1.1 0 0 0 2.5 4.1v8.4A1.1 1.1 0 0 0 3.6 13.6h8.4a1.1 1.1 0 0 0 1.1-1.1V9.5"/>
+                    <path d="M9 2.5h4.5V7"/><path d="M13.4 2.6 7.7 8.3"/>
+                  </svg>
+                </span>
+                <span class="sb-sep"></span>
+                <span class="sb-icon">
+                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+                    <line x1="2" y1="5" x2="14" y2="5"/><circle cx="6.5" cy="5" r="1.5" fill="currentColor" stroke="none"/>
+                    <line x1="2" y1="11" x2="14" y2="11"/><circle cx="10" cy="11" r="1.5" fill="currentColor" stroke="none"/>
+                  </svg>
+                </span>
+                <span class="sb-icon">
+                  <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                    <path d="M4 4l8 8M12 4l-8 8"/>
+                  </svg>
+                </span>
+              </div></div>
+            </div>
+          </div>
+
+          <!-- view 2: the compare shell, faithful to shell.html -->
+          <div class="view mini" id="shellview">
+            <div class="panes">
+              <div class="frame frame-a">
+                <div class="pane-hd">
+                  <span class="k">A</span>
+                  <span class="bs">main
+                    <svg viewBox="0 0 10 6" width="9" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <span class="sha">50ccc62</span>
+                </div>
+                <div class="vp">
+                  <div class="wire-nav">
+                    <span class="logo"></span>
+                    <span class="wnav-pill p1"></span><span class="wnav-pill p2"></span>
+                    <span class="wnav-pill p3"></span><span class="avatar"></span>
+                  </div>
+                  <div class="wire-main">
+                    <div class="wire-h1"></div><div class="wl wire-sub"></div>
+                    <div class="cards">
+                      <div class="wcard"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+                      <div class="wcard"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+                      <div class="wcard"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+                    </div>
+                    <div class="wire-chart">
+                      <div class="bar b1"></div><div class="bar b2"></div><div class="bar b3"></div>
+                      <div class="bar b4"></div><div class="bar b5"></div><div class="bar b6"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="frame frame-b">
+                <div class="pane-hd">
+                  <span class="k">B</span>
+                  <span class="bs">feat/dashboard
+                    <svg viewBox="0 0 10 6" width="9" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <span class="sha">9d81f2a</span>
+                </div>
+                <div class="vp">
+                  <div class="wire-nav">
+                    <span class="logo"></span>
+                    <span class="wnav-pill p1"></span><span class="wnav-pill p2"></span>
+                    <span class="wnav-pill p3"></span><span class="wnav-pill pnew"></span>
+                    <span class="avatar"></span>
+                  </div>
+                  <div class="wire-main">
+                    <div class="wire-h1"></div><div class="wl wire-sub"></div>
+                    <div class="cards">
+                      <div class="wcard"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+                      <div class="wcard"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+                      <div class="wcard new"><div class="wl k"></div><div class="v"></div><div class="wl s"></div></div>
+                    </div>
+                    <div class="wire-chart">
+                      <div class="bar b1"></div><div class="bar mb2"></div><div class="bar mb3"></div>
+                      <div class="bar mb4"></div><div class="bar b5"></div><div class="bar mb6"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div id="swapbtn">
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2.5 5.5h9M9 2.5l3 3-3 3M13.5 10.5h-9M7 13.5l-3-3 3-3"/>
+                </svg>
+              </div>
+              <div class="onion-ctl">opacity<span class="track"><span class="knob"></span></span>55%</div>
+            </div>
+            <div class="dock">
+              <span class="brand">
+                <svg viewBox="0 0 100 100" width="15" height="15" fill="currentColor" aria-hidden="true">
+                  <path d="M45 11C50.5228 11 55 15.4772 55 21V39H40C34.4772 39 30 43.4772 30 49V78C30 83.5228 34.4772 88 40 88H26C20.4772 88 16 83.5228 16 78V21C16 15.4772 20.4772 11 26 11H45ZM73 39C78.5228 39 83 43.4772 83 49V78C83 83.5228 78.5228 88 73 88H45C50.5228 88 55 83.5228 55 78V39H73Z"/>
+                </svg>
+              </span>
+              <span class="dock-sep"></span>
+              <span class="seg">
+                <span class="m-side">
+                  <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                    <rect x="1.5" y="3" width="5.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                    <rect x="9" y="3" width="5.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                  </svg>
+                </span>
+                <span class="m-blend">
+                  <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" stroke="currentColor" stroke-width="1.3">
+                    <circle cx="6.2" cy="6.2" r="4.6" fill="currentColor" fill-opacity="0.18"/>
+                    <circle cx="9.8" cy="9.8" r="4.6" fill="currentColor" fill-opacity="0.18"/>
+                  </svg>
+                </span>
+                <span class="m-onion">
+                  <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="8,2.45 13.5,5.85 8,9.25 2.5,5.85"/>
+                    <polyline points="2.5,10.15 8,13.55 13.5,10.15"/>
+                  </svg>
+                </span>
+              </span>
+              <span class="dock-sep"></span>
+              <span class="w-ctl"><span>w:</span>
+                <span class="w-val"><em class="w1">fit</em><em class="w2">375</em></span>
+                <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="4.5" y="1.5" width="7" height="13" rx="1.3"/><line x1="6.5" y1="12" x2="9.5" y2="12"/></svg>
+                <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2.5" y="1.5" width="11" height="13" rx="1.3"/><line x1="6.5" y1="12.3" x2="9.5" y2="12.3"/></svg>
+                <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="2.5" width="13" height="8.5" rx="1"/><line x1="5.5" y1="14" x2="10.5" y2="14"/><line x1="8" y1="11" x2="8" y2="14"/></svg>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="cursor">
+        <span class="ring"></span>
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path d="M5.5 3.2 18.2 14h-7.3l3.4 7-2.8 1.3-3.3-7L5.5 19z"
+            fill="#fff" stroke="#33383d" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+  <div class="demo-ctl">
+  <button id="play" aria-pressed="true" aria-label="Pause the preview animation">
+    <svg class="i-pause" viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true">
+      <rect x="3.5" y="2.5" width="3.2" height="11" rx="1"/><rect x="9.3" y="2.5" width="3.2" height="11" rx="1"/>
+    </svg>
+    <svg class="i-play" viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true">
+      <path d="M4.5 2.8v10.4c0 .8.9 1.3 1.6.9l8-5.2a1 1 0 0 0 0-1.8l-8-5.2a1.05 1.05 0 0 0-1.6.9z"/>
+    </svg>
+    <span class="t-pause">Pause</span><span class="t-play">Play</span>
+  </button>
+  </div>
+</div>
+
+<section id="features">
+  <h2>Features</h2>
+  <div class="cards2">
+    <div class="getcard">
+      <span class="ic">
+        <svg viewBox="0 0 16 16" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8"/><circle cx="4.5" cy="12.5" r="1.8"/><circle cx="11.5" cy="5.5" r="1.8"/><path d="M4.5 5.3v5.4M11.5 7.3c0 3-7 2-7 5.2"/></svg>
+      </span>
+      <b>In-page branch switching</b>
+      <p>Pick any branch from the pill and it builds in an isolated worktree on
+        its own dev server.</p>
+    </div>
+    <div class="getcard">
+      <span class="ic">
+        <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><rect x="1.5" y="3" width="5.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="3" width="5.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+      </span>
+      <b>Side-by-side diffs</b>
+      <p>Both panes live, plus blend and onion diff modes where UI changes are highlighted.</p>
+    </div>
+    <div class="getcard">
+      <span class="ic">
+        <svg viewBox="0 0 16 16" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4l3.5 4-3.5 4M8 12.5h5.5"/></svg>
+      </span>
+      <b>Framework agnostic</b>
+      <p>Next, Vite, Django, Rails, everything supported as long as it answers HTTP on a port.</p>
+    </div>
+    <div class="getcard">
+      <span class="ic">
+        <svg viewBox="0 0 16 16" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 14 5v6l-6 3.2L2 11V5z"/><path d="M2 5l6 3.2L14 5M8 8.2v6"/></svg>
+      </span>
+      <b>Zero dependencies</b>
+      <p>The entire tool is Node builtins, with no external packages or dependencies.</p>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <h2>Installation</h2>
+<pre><span class="p">$</span> cd your-repo
+<span class="p">$</span> npx sidebranch init     <span class="c"># writes a starter .sidebranch.json</span></pre>
+
+  <h3>Tell it how to run your app (.sidebranch.json):</h3>
+<pre>{
+  <span class="y">"dev"</span>: <span class="g">"npm run dev"</span>,        <span class="c">// start command, run inside each pane</span>
+  <span class="y">"install"</span>: <span class="g">"npm install"</span>,   <span class="c">// runs only when lockfiles change</span>
+  <span class="y">"copy"</span>: [<span class="g">".env"</span>, <span class="g">".env.local"</span>]
+}</pre>
+
+  <h3>Start the daemon:</h3>
+<pre><span class="p">$</span> npx sidebranch start    <span class="c"># http://127.0.0.1:49400, loopback only</span></pre>
+
+  <h3>Add the widget to your app, dev builds only:</h3>
+<pre>&lt;script src=<span class="g">"http://localhost:49400/widget.js"</span> defer&gt;&lt;/script&gt;</pre>
+  <p class="note">Then click the pill, pick a branch, and compare. Full configuration reference,
+    recipes for complex apps, and the threat model live in the
+    <a href="https://github.com/cristobalwee/sidebranch#readme" target="_blank" rel="noopener">README</a> and
+    <a href="https://github.com/cristobalwee/sidebranch/blob/main/SECURITY.md" target="_blank" rel="noopener">SECURITY.md</a>.</p>
+</section>
+</main>
+
+<footer>
+  <div class="row">
+    <span>Made with care by <a href="https://cristobalgrana.me/" target="_blank" rel="noopener">Cris Graña</a></span>
+    <span>Colophon — <a href="./geist-pixel.LICENSE.txt" target="_blank" rel="noopener">Geist Pixel</a></span>
+  </div>
+</footer>
+
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ---- scale the fixed 860x540 stage to the card's width ---- */
+  const wrap = document.getElementById("stage-wrap");
+  const stage = document.getElementById("stage");
+  const fit = () => {
+    const s = wrap.clientWidth / 860;
+    stage.style.transform = "scale(" + s + ")";
+    wrap.style.height = (540 * s) + "px";
+  };
+  fit();
+  addEventListener("resize", fit);
+
+  /* ---- scene player ----
+     data-scene drives the cursor + one-shot effects; cumulative on-<scene>
+     classes hold persistent state (pill stays expanded, tab stays open...)
+     until the reset at the top of each loop. */
+  // Move scenes give the cursor .75s of travel plus a beat of rest, so it
+  // has always ARRIVED before the following click scene fires its ring and
+  // (0.18s later) the UI reacts — the click leads, the UI follows.
+  const SCENES = [
+    ["idle", 1500], ["to-pill", 1000], ["expand", 1500], ["fly-open", 1500],
+    ["to-branch", 1000], ["pick", 1100], ["building", 1600], ["rebuilt", 2200],
+    ["to-compare", 1000], ["open-shell", 1650], ["hold-shell", 1000],
+    ["to-handle", 900], ["drag", 1550], ["drag-back", 1550],
+    ["to-onion", 1000], ["onion", 2600], ["hold-end", 1800], ["fade", 430],
+  ];
+  let i = 0;
+  let timer = null;
+  let playing = !matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const apply = () => {
+    stage.dataset.scene = SCENES[i][0];
+    stage.classList.add("on-" + SCENES[i][0]);
+  };
+  const reset = () => {
+    stage.className = stage.className.split(" ").filter((c) => !c.startsWith("on-")).join(" ");
+  };
+  const step = () => {
+    timer = setTimeout(() => {
+      i = (i + 1) % SCENES.length;
+      if (i === 0) {
+        // The "fade" scene has just taken the stage to opacity 0. Snap the
+        // start state into place while it's invisible (children's
+        // transitions disabled), then let the stage's own opacity — which
+        // .snap deliberately doesn't touch — fade the new cycle straight
+        // in. No veil, no held blank frame.
+        stage.classList.add("snap");
+        reset();
+        apply();
+        requestAnimationFrame(() => requestAnimationFrame(() => stage.classList.remove("snap")));
+      } else {
+        apply();
+      }
+      step();
+    }, SCENES[i][1]);
+  };
+
+  const play = document.getElementById("play");
+  const setPlaying = (on) => {
+    playing = on;
+    play.setAttribute("aria-pressed", String(on));
+    play.setAttribute("aria-label", (on ? "Pause" : "Play") + " the preview animation");
+    if (on) step();
+    else { clearTimeout(timer); timer = null; }
+  };
+  play.addEventListener("click", () => setPlaying(!playing));
+
+  if (playing) {
+    apply();
+    step();
+  } else {
+    // reduced motion: hold a representative still (the onion diff) instead
+    // of autoplaying; the play button opts in.
+    stage.classList.add("snap");
+    for (const [name] of SCENES) {
+      stage.classList.add("on-" + name);
+      stage.dataset.scene = name;
+      if (name === "onion") break;
+    }
+    play.setAttribute("aria-pressed", "false");
+    play.setAttribute("aria-label", "Play the preview animation");
+    requestAnimationFrame(() => stage.classList.remove("snap"));
+  }
+})();
+</script>
+</body>
+</html>

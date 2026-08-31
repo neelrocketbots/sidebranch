@@ -1,0 +1,42 @@
+name: site
+
+# Deploys site/ to GitHub Pages. The site is plain files — no build step, by
+# design (see AGENTS.md): the artifact IS the directory.
+#
+# One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      # The font must never be published without its OFL notice — same rule
+      # as the npm tarball, enforced the same way: fail the deploy.
+      - name: Assert the font ships with its license
+        run: |
+          test -f site/geist-pixel.woff2
+          test -f site/geist-pixel.LICENSE.txt
+          grep -q "SIL OPEN FONT LICENSE" site/geist-pixel.LICENSE.txt
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

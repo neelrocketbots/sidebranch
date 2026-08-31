@@ -27,6 +27,11 @@ Notable changes to sidebranch. This project follows
 
 ### Added
 
+- A landing page under `site/`, deployed to GitHub Pages. Not part of the
+  npm package (`files` excludes it) and adds no dependencies — one static
+  page reusing the tool's own palette, mark, and (OFL-licensed, notice
+  included) Geist Pixel build.
+
 - `GET /handshake` — an unauthenticated credential bootstrap reporting
   `{token, port, widget, version, apiVersion}`, behind the same
   loopback/Host/Origin gate as every other route. It exists for the browser
