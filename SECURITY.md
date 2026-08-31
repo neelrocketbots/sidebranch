@@ -32,20 +32,32 @@ configuration.
    allowlist regex, then `git check-ref-format --branch`) before reaching
    git; names shaped like options (`-D`), paths (`..`), or containing any
    shell-significant byte are rejected at the API boundary with 400.
-7. **No filesystem routing.** The daemon serves exactly three embedded,
-   fixed-path assets (`widget.js`, `/shell`, and a bundled font used by
-   both) and JSON APIs. Every servable path is a hardcoded route, not
-   derived from the request URL, so there is no traversal surface no
-   matter how many fixed assets that list grows to.
+7. **No filesystem routing.** The daemon serves three embedded, fixed-path
+   assets (`widget.js`, `/shell`, and a bundled font used by both), a
+   credential bootstrap (`/handshake`), a liveness probe (`/healthz`), and
+   JSON APIs. Every servable path is a hardcoded route, not derived from
+   the request URL, so there is no traversal surface no matter how many
+   fixed routes that list grows to.
 8. **The user's working tree is read-only territory.** The daemon never
    runs a mutating git command outside its own worktrees under
    `~/.sidebranch/`.
 
 ## Token delivery
 
-The token is embedded into `widget.js` and `/shell` at response time. Those
-endpoints are unauthenticated by necessity (they *bootstrap* auth), which is
-safe because:
+The token reaches a browser two ways, and both are unauthenticated by
+necessity — they are what *bootstrap* auth:
+
+1. **Embedded** into `widget.js` and `/shell` at response time, for the
+   `<script src>` integration.
+2. **Fetched** from `GET /handshake`, for the browser extension. An
+   extension cannot use route 1 at all: Manifest V3 forbids executing
+   remotely-fetched code, so the extension ships the widget in its own
+   package and has nowhere for a substituted token to arrive.
+
+Route 2 discloses nothing route 1 does not. Any caller that clears the gate
+below can already read the token out of the `widget.js` response body — the
+two routes are the same disclosure to the same audience, differing only in
+shape. Both are safe for the same reasons:
 
 (The bundled font both of them load via `@font-face` is unauthenticated for
 a different, simpler reason: a browser's font fetch cannot carry a custom
@@ -107,7 +119,26 @@ allowances for frames and fetch), `X-Frame-Options: DENY`, `nosniff`, and
 - **HTTPS dev servers**: an https page cannot load the http widget (mixed
   content). Run the daemon behind a locally-trusted cert if you need this;
   do not weaken the invariants to work around it.
+- **The browser extension**, where used, runs on every page served from
+  `localhost`/`127.0.0.1` — that is the scope it requests and the only
+  scope it requests. It holds no permission for any other origin, so it
+  cannot see, and is never injected into, ordinary browsing. Within that
+  scope it does what the script tag does: talk to your daemon, on your
+  machine. All of its daemon traffic is issued from the content script, so
+  those requests carry the loopback page's own `Origin` and are admitted
+  by invariant 4 unchanged — no extension origin is allowlisted, and the
+  invariants above are not relaxed for it in any way.
 
 ## Reporting
 
-Please open a private security advisory rather than a public issue.
+Please report vulnerabilities privately, not as a public issue:
+
+- **Preferred:** [open a private security advisory](https://github.com/cristobalwee/sidebranch/security/advisories/new)
+  on the repository.
+  If you cannot use GitHub, open an issue asking for a private channel —
+  without any details of the vulnerability itself — and one will be
+  arranged.
+
+Expect an acknowledgement within a few days. This is a small project
+maintained by one person; there is no bounty program, but credit is given
+in the changelog for any report that leads to a fix.

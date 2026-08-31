@@ -1,0 +1,36 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # The suite drives real git worktrees and boots real dev servers, so it is
+    # genuinely OS-sensitive — run it on both platforms people use this on.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No dependencies to install — that is the point. Deliberately no
+      # `npm ci`: there is no lockfile because there is nothing to lock.
+      - name: Assert zero runtime dependencies
+        run: |
+          node -e '
+            const p = require("./package.json");
+            const n = Object.keys(p.dependencies ?? {}).length;
+            if (n !== 0) { console.error(`expected 0 dependencies, found ${n}`); process.exit(1); }
+            console.log("dependencies: 0");
+          '
+      - run: npm test

@@ -4,13 +4,19 @@
   "description": "Framework-agnostic sidecar for reviewing PRs locally: switch branches from an in-page widget and compare worktrees side by side.",
   "type": "module",
   "license": "MIT",
+  "author": "cristobalwee",
+  "homepage": "https://github.com/cristobalwee/sidebranch#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/cristobalwee/sidebranch.git" },
+  "bugs": { "url": "https://github.com/cristobalwee/sidebranch/issues" },
   "engines": { "node": ">=20" },
   "bin": { "sidebranch": "bin/sidebranch.js" },
-  "files": ["bin", "src", "README.md", "SECURITY.md", "LICENSE"],
+  "files": ["bin", "src", "README.md", "SECURITY.md", "CHANGELOG.md", "LICENSE"],
   "scripts": {
     "start": "node bin/sidebranch.js start",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "prepublishOnly": "npm test"
   },
-  "keywords": ["git", "worktree", "pr-review", "devtools", "sidecar", "branch"],
+  "keywords": ["git", "worktree", "pr-review", "devtools", "sidecar", "branch", "code-review", "preview"],
+  "publishConfig": { "access": "public", "provenance": true },
   "dependencies": {}
 }

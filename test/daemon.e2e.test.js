@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { Manager } from "../src/manager.js";
-import { Daemon } from "../src/daemon.js";
+import { Daemon, API_VERSION } from "../src/daemon.js";
 import { normalize } from "../src/config.js";
 
 const run = promisify(execFile);
@@ -117,6 +117,111 @@ test("widget & shell are served with the session token embedded", async () => {
   const s = await (await fetch(BASE + "/shell")).text();
   assert.ok(s.includes(token));
   assert.ok(s.includes("Content-Security-Policy") === false); // header, not body
+});
+
+test("widget.js is assembled from core + tag boot, with credentials only in the boot", async () => {
+  const w = await (await fetch(BASE + "/widget.js")).text();
+  // Core defines the entry point; the boot calls it. Both halves must be
+  // present — serving core alone renders nothing at all, silently.
+  assert.match(w, /globalThis\.__sidebranchStart \?\?=/);
+  assert.match(w, /start\(\{ token: "/);
+  assert.ok(w.includes(token));
+  assert.ok(!w.includes("__SIDEBRANCH_TOKEN__"));
+  assert.ok(!w.includes("__SIDEBRANCH_PORT__"));
+
+  // The token must reach the widget as an argument, never as a literal baked
+  // into the core body — that separation is what lets the extension ship core
+  // verbatim in its own package without shipping a secret.
+  const core = await fs.readFile(new URL("../src/assets/widget-core.js", import.meta.url), "utf8");
+  assert.ok(!core.includes("__SIDEBRANCH_TOKEN__"));
+  assert.ok(!core.includes(token));
+});
+
+test("GET /handshake bootstraps a token for callers that can't take a template", async () => {
+  const res = await fetch(BASE + "/handshake");
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("cache-control"), "no-store");
+  const body = await res.json();
+  assert.equal(body.token, token);
+  assert.equal(body.port, PORT);
+  assert.equal(body.widget, true);
+  assert.equal(typeof body.version, "string");
+  assert.equal(body.apiVersion, API_VERSION);
+
+  // It must sit OUTSIDE /api/*: it exists to bootstrap the bearer token, so
+  // requiring the bearer token would make it useless.
+  const noAuth = await fetch(BASE + "/handshake", { headers: {} });
+  assert.equal(noAuth.status, 200);
+});
+
+test('"widget": false is honored in both delivery channels', async () => {
+  // The tag channel serves a no-op body. The extension can't be told that way
+  // — it ships the widget itself — so the handshake has to report it, or the
+  // config flag would silently apply to only one of the two channels.
+  const { EventEmitter } = await import("node:events");
+  const stub = new EventEmitter();
+  stub.config = { widget: false };
+  stub.shutdown = async () => {};
+
+  const d = new Daemon({ manager: stub, port: PORT + 7 });
+  await d.start();
+  try {
+    const base = `http://127.0.0.1:${PORT + 7}`;
+    const body = await (await fetch(base + "/widget.js")).text();
+    assert.match(body, /disabled via \.sidebranch\.json/);
+    assert.ok(!body.includes("__sidebranchStart"));
+
+    const hs = await (await fetch(base + "/handshake")).json();
+    assert.equal(hs.widget, false);
+  } finally {
+    await d.stop();
+  }
+});
+
+test("GET /handshake is still behind the loopback gate", async () => {
+  // It hands out the session token, so every gate that protects /widget.js
+  // must protect this too. As above, fetch() refuses to spoof Host, so the
+  // DNS-rebinding shape has to go through node:http.
+  const { default: http } = await import("node:http");
+  const rebound = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port: PORT, path: "/handshake", headers: { Host: "evil.example" } },
+      (res) => { res.resume(); resolve(res.statusCode); }
+    );
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(rebound, 403, "a hostile Host header must not receive a token");
+
+  const crossOrigin = await fetch(BASE + "/handshake", { headers: { Origin: "https://evil.example" } });
+  assert.equal(crossOrigin.status, 403, "a remote page must not receive a token");
+
+  // A loopback page — the extension's content script is exactly this — passes.
+  const loopback = await fetch(BASE + "/handshake", { headers: { Origin: "http://localhost:5173" } });
+  assert.equal(loopback.status, 200);
+  assert.equal(loopback.headers.get("access-control-allow-origin"), "http://localhost:5173");
+});
+
+test("the bundled font serves as a valid, hard-cached woff2 the assets point at", async () => {
+  const res = await fetch(BASE + "/geist-pixel.woff2");
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "font/woff2");
+  // No token and no per-run state in this file, unlike widget.js/shell.
+  assert.match(res.headers.get("cache-control"), /immutable/);
+
+  // Actually a woff2, not a mislabeled ttf: the container's magic number.
+  const buf = Buffer.from(await res.arrayBuffer());
+  assert.equal(buf.subarray(0, 4).toString("latin1"), "wOF2");
+
+  // Both assets must reference the route that exists. A stale ".ttf" URL
+  // here fails silently in a browser (the font just never loads and the
+  // mono fallback takes over), so assert it rather than eyeballing it.
+  const w = await (await fetch(BASE + "/widget.js")).text();
+  const sh = await (await fetch(BASE + "/shell")).text();
+  for (const src of [w, sh]) {
+    assert.ok(src.includes("/geist-pixel.woff2"));
+    assert.ok(!src.includes("geist-pixel.ttf"));
+  }
 });
 
 test("full loop: two panes on two branches, both actually serving", async () => {

@@ -33,17 +33,20 @@ full threat model. This file is about building/changing the tool itself.
    pane fails closed (`EDIRTY`) rather than being silently reset, unless
    the caller explicitly opts into `discard`.
 4. **`repoRoot` resolves from `process.cwd()`, exactly like git.** There is
-   no `--repo` flag and no safety check. If this tool is vendored inside a
-   consumer app's tree (as it is right now, inside `icw-smart-chart/`) and
-   you run `sidebranch start` from *inside* this folder instead of the
-   consumer app's root, it will happily start managing itself. Always
-   confirm the `repo` path the startup banner prints matches what you
-   expect before trusting anything that follows.
+   no `--repo` flag and no safety check. Run `sidebranch start` from
+   *inside this repo* and it will happily start managing itself (this
+   repo is a git repo like any other) — which is occasionally what you
+   want and usually isn't. Always confirm the `repo` path the startup
+   banner prints matches what you expect before trusting anything that
+   follows.
 
 ## Architecture
 
 ```
-bin/sidebranch.js  -> src/cli.js         init | start | clean | doctor
+bin/sidebranch.js  -> src/cli.js         init | start | stop | clean | doctor
+src/daemonfile.js                         per-repo {pid,port} record: lets stop signal a daemon
+                                           and start/clean/doctor detect one. Liveness is proven
+                                           twice (pid + /healthz) — never trust the pid alone.
 src/config.js                            .sidebranch.json load/normalize, data-dir resolution.
                                            normalizeEnv() sanitizes the `env` map; RESERVED_ENV
                                            lists the vars sidebranch injects and config can't set.
@@ -61,14 +64,23 @@ src/install.js                            lockfile hashing (skip reinstall when 
                                            bake a snippet of captured output into failure messages.
 src/daemon.js                             HTTP server: loopback/Host/Origin gate, bearer auth,
                                            routes, SSE event stream (/api/events), GET
-                                           /api/pane/:id/log for a pane's full install+server output
+                                           /api/pane/:id/log for a pane's full install+server output,
+                                           GET /handshake (unauthenticated token bootstrap for the
+                                           extension; API_VERSION lives here)
 src/security.js                           the trust boundary every check in daemon.js/gitops.js
                                            relies on
-src/assets/widget.js                      in-page pill/toolbar; runs INSIDE the consumer app's
-                                           page, shadow DOM (mode:"closed")
+src/assets/widget-core.js                 in-page pill/toolbar; runs INSIDE the consumer app's
+                                           page, shadow DOM (mode:"closed"). Defines
+                                           globalThis.__sidebranchStart({token, port}) and does
+                                           nothing on load — a boot file calls it.
+src/assets/boot-tag.js                    the <script src> channel's boot: carries the
+                                           __SIDEBRANCH_* placeholders, appended to core by
+                                           Daemon.serveWidget(). The extension has its own boot
+                                           that calls the same entry point after GET /handshake.
 src/assets/shell.html                     the /shell compare view (side-by-side / blend / onion)
-src/assets/geist-pixel.ttf                bundled UI font for widget.js/shell.html, served at
-                                           GET /geist-pixel.ttf (unauthenticated — see below)
+src/assets/geist-pixel.woff2              bundled UI font for widget.js/shell.html, served at
+                                           GET /geist-pixel.woff2 (unauthenticated — see below).
+                                           OFL 1.1, NOT MIT — see geist-pixel.LICENSE.txt
 ```
 
 ## Conventions specific to this codebase
@@ -130,6 +142,31 @@ src/assets/geist-pixel.ttf                bundled UI font for widget.js/shell.ht
   browsing context across a DOM move) and fall back to a plain
   `appendChild`/`insertBefore` elsewhere, which reloads the frame — an
   acceptable, documented degradation, not a silent state divergence.
+- **The widget must never contain a baked-in token, and `widget-core.js`
+  must never reference `__SIDEBRANCH_*` placeholders.** The token arrives as
+  an argument to `__sidebranchStart({token, port})`, because there are two
+  delivery channels and only one of them can receive a rendered template:
+  - `<script src=".../widget.js">` — the daemon concatenates
+    `widget-core.js` + `boot-tag.js` and substitutes into the boot.
+  - the browser extension — which **cannot** do that. Manifest V3 forbids
+    executing remotely-fetched code, so a content script may not fetch
+    `/widget.js` and eval it; the extension ships `widget-core.js` verbatim
+    in its own package and calls the same entry point with a token from
+    `GET /handshake`.
+
+  So "just inline the token again, it's simpler" silently breaks the
+  extension channel and puts a secret into a file that gets published to the
+  Chrome Web Store. There is a test asserting core contains neither the
+  placeholder nor the live token.
+
+  The other rule that falls out of this: **all extension traffic to the
+  daemon goes through the content script, never a background service
+  worker.** A content script's `fetch` carries the *page's* origin
+  (`http://localhost:5173`), which `isAllowedOrigin` already admits. A
+  service worker's carries `chrome-extension://<id>`, which it rejects on
+  protocol — and "fixing" that by allowlisting an extension origin would
+  admit the first non-loopback origin in this tool's history. Don't. Route
+  through the content script and SECURITY.md's invariants hold unchanged.
 - **The widget runs inside arbitrary consumer pages via a closed shadow
   root** (`attachShadow({mode:"closed"})`, `:host{all:initial}`)
   specifically so the token can't leak and the host page's styles/scripts
@@ -173,10 +210,10 @@ src/assets/geist-pixel.ttf                bundled UI font for widget.js/shell.ht
 - **Bundling a font file stays zero-dependency as long as it's a static
   asset the daemon serves itself** — no npm package, no CDN `<link>`
   (that would be a live network dependency, and a privacy leak for
-  something injected into someone else's dev page). `src/assets/geist-pixel.ttf`
+  something injected into someone else's dev page). `src/assets/geist-pixel.woff2`
   is loaded into memory at daemon startup exactly like `widget.js`/
   `shell.html`, and served from a third fixed route,
-  `GET /geist-pixel.ttf` — a deliberate, documented expansion of
+  `GET /geist-pixel.woff2` — a deliberate, documented expansion of
   `SECURITY.md` invariant 7 (was "exactly two" embedded assets, now
   three; the "no filesystem routing" guarantee itself is unaffected,
   since the new route is just as hardcoded as the first two). Two things
@@ -195,6 +232,30 @@ src/assets/geist-pixel.ttf                bundled UI font for widget.js/shell.ht
   - The cross-origin CORS reflection in `Daemon.gate()` already covers
     any new route for free (it runs before routing, keyed only on the
     `Origin` header) — don't add per-route CORS handling.
+- **The bundled font is a modified build, and must stay one.** Upstream
+  Geist Pixel is a 3.7 MB variable TTF whose `gvar` table (2.8 MB, 77% of
+  the file) exists solely to drive an `ELSH` axis that nothing in this
+  codebase ever varies. `src/assets/geist-pixel.woff2` is that font with
+  `ELSH` pinned to its default and the result converted to WOFF2: 24 KB,
+  all 481 glyphs retained, visually identical for every way we use it.
+  Regenerating it (one-time, offline, no runtime dep — `fonttools` in a
+  throwaway venv):
+
+  ```sh
+  fonttools varLib.instancer upstream.ttf ELSH=0 -o static.ttf
+  pyftsubset static.ttf --output-file=src/assets/geist-pixel.woff2 \
+    --flavor=woff2 --unicodes='*' --layout-features='*' --name-IDs='*'
+  ```
+
+  Do **not** replace it with the upstream binary "to be safe" — that's a
+  152x size regression for zero visual gain. And it is **OFL 1.1, not
+  MIT**: `src/assets/geist-pixel.LICENSE.txt` carries the license text,
+  the copyright notices, and a record of exactly these modifications.
+  That file ships in the npm tarball and must keep shipping; dropping it
+  makes every publish a license violation. Upstream declares no Reserved
+  Font Name, which is the only reason this modified build may keep the
+  "Geist Pixel" family name — check that again if you ever re-derive it
+  from a different upstream release.
 
 ## Testing
 
@@ -222,16 +283,20 @@ don't claim success you can't see.
 Surfaced while dogfooding this tool against a real consumer app
 (2026-07-22):
 
-- **No `sidebranch stop` command or PID file.** Fine for the intended
-  foreground-terminal-tab workflow (mirrors `next dev`/`vite`); adds
-  friction if scripted or backgrounded. `sidebranch clean` (`src/cli.js`)
-  mitigates the stale-worktree symptom of this gap — it walks
-  `~/.sidebranch/projects/<repo>/panes/*` and `git worktree remove`s
-  whatever it finds, without needing a daemon — but it is still blind to
-  whether a daemon process is actively serving a dev server out of one of
-  those panes right now, since that's exactly the PID tracking that
-  doesn't exist. Don't present `clean` as a `stop` replacement; it's
-  git-worktree cleanup only.
+- ~~**No `sidebranch stop` command or PID file.**~~ *Closed.* See
+  `src/daemonfile.js`: the daemon records `{pid, port}` to
+  `~/.sidebranch/projects/<repo>/daemon.json`, which gave `stop` something
+  to signal and gave `start`/`clean`/`doctor` something to check. The rule
+  to preserve if you touch it: **a pid on disk is a claim, not a fact.**
+  `readRecord()` proves liveness twice — the pid exists *and* `/healthz`
+  answers on the recorded port — because the OS recycles pids, and a
+  record left behind by a `kill -9`'d daemon can name a completely
+  unrelated process. Acting on the pid alone means `sidebranch stop` kills
+  a bystander; there is a test named for exactly that
+  (`test/cli.test.js`). `stopDaemon()` also sends SIGTERM only and never
+  escalates to SIGKILL — the daemon's own signal handler is what reaps
+  pane dev servers, so forcing it would orphan the children the command
+  exists to clean up.
 - **The widget's "open in new tab" flow always targets whichever pane the
   current tab *isn't* currently bound to** — there's no way to reach a
   third concurrent preview from the pill alone (bounded by the `panes`

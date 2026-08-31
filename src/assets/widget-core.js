@@ -1,6 +1,20 @@
 /**
- * sidebranch widget — injected into the app under review via:
- *   <script src="http://localhost:49400/widget.js" defer></script>
+ * sidebranch widget (core) — the entire in-page UI, minus how it gets its
+ * credentials. This file defines `globalThis.__sidebranchStart(options)` and
+ * does nothing else on load; a *boot* file calls it.
+ *
+ * There are two boots, because there are two ways to deliver the widget:
+ *
+ *   - `boot-tag.js` — for `<script src="http://localhost:49400/widget.js">`.
+ *     The daemon concatenates core + this boot and substitutes the token and
+ *     port into it at response time, exactly as it always has.
+ *   - the browser extension's content script — which cannot use a rendered
+ *     template at all, because Manifest V3 forbids executing remotely-fetched
+ *     code. It ships this file verbatim and calls the same entry point with a
+ *     token it fetched from `GET /handshake` at runtime.
+ *
+ * Hence the split: one widget body, two credential sources, no forked code.
+ * Nothing in here may assume which boot called it.
  *
  * Behavior contract:
  *   - Runs ONLY when the embedding page itself is served from loopback.
@@ -17,18 +31,27 @@
  *     widget out, then hides it for the tab's session (sessionStorage);
  *     corner position persists across sessions (localStorage).
  */
-(() => {
+/* `??=` so that loading core twice in one context (a page with two script
+ * tags, say) doesn't replace a definition the first load may already be
+ * running from. Note the parameter is a plain identifier destructured in the
+ * body rather than `({ token, port })`: a destructuring parameter list makes
+ * the "use strict" directive below a SyntaxError. */
+globalThis.__sidebranchStart ??= (options) => {
   "use strict";
 
+  const { token, port } = options;
+
   // ---- hard gate: loopback pages only ------------------------------------
+  // Kept here, not in the boots, so it protects both channels. The extension
+  // only injects on loopback matches anyway; this is the belt to that braces.
   const h = location.hostname;
   const isLoop = h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1" || /^127\./.test(h);
   if (!isLoop) return;
   if (window.__sidebranchLoaded) return;
   window.__sidebranchLoaded = true;
 
-  const TOKEN = "__SIDEBRANCH_TOKEN__";
-  const DAEMON = "http://localhost:__SIDEBRANCH_PORT__";
+  const TOKEN = token;
+  const DAEMON = "http://localhost:" + port;
   const HIDE_KEY = "sidebranch:hidden";
   const POS_KEY = "sidebranch:position";
   try { if (sessionStorage.getItem(HIDE_KEY) === "1") return; } catch { /* storage blocked — continue */ }
@@ -78,7 +101,7 @@
     if (window.__sidebranchFont || typeof FontFace === "undefined") return;
     window.__sidebranchFont = true;
     try {
-      const face = new FontFace("Geist Pixel", `url("${DAEMON}/geist-pixel.ttf") format("truetype")`, { display: "swap" });
+      const face = new FontFace("Geist Pixel", `url("${DAEMON}/geist-pixel.woff2") format("woff2")`, { display: "swap" });
       face.load().then((f) => document.fonts.add(f)).catch(() => { /* mono fallback */ });
     } catch { /* FontFace unsupported/blocked — mono fallback */ }
   }
@@ -723,4 +746,4 @@
     render();
     setInterval(refresh, 5000);
   }
-})();
+};

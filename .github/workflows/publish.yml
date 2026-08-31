@@ -1,0 +1,36 @@
+name: publish
+
+# Publishes to npm with provenance when a v* tag is pushed. Provenance is a
+# cryptographic attestation that the tarball was built from this repo at this
+# commit — for a tool whose pitch is "audit it yourself", that is the claim
+# worth being able to prove.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write   # required for npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Verify the tag matches package.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p 'require("./package.json").version')"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "tag v$TAG does not match package.json version $PKG" >&2
+            exit 1
+          fi
+          echo "publishing $PKG"
+      # prepublishOnly runs the suite again here; belt and braces.
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -269,20 +269,25 @@ for loopback or use **Open A** in a separate tab instead.
 - Worktrees live under `~/.sidebranch/`, outside your repo, so file
   watchers and tooling in your main tree never see them.
 
-## Cleanup
+## Stopping and cleanup
 
-Panes are worktrees that outlive the daemon — there's no `sidebranch stop`,
-so stopping (or never starting) the daemon leaves them checked out. Since
-git refuses to check out a branch that's already checked out somewhere
-else, a stale pane holding `main` will block you from checking out `main`
-in your own working tree, with an error like:
+`sidebranch stop` shuts down the daemon and its pane dev servers from any
+terminal — you don't have to find the tab it's running in:
+
+```sh
+sidebranch stop
+```
+
+Pane worktrees deliberately survive a stop, so the next `start` reuses them
+instead of re-installing everything. That means a pane still holds whatever
+branch it last checked out, and git refuses to check out a branch that is
+already checked out somewhere else:
 
 ```
 fatal: 'main' is already used by worktree at '/Users/you/.sidebranch/projects/.../panes/a'
 ```
 
-Run `sidebranch clean` (no daemon required) to see and remove that
-project's pane worktrees:
+`sidebranch clean` removes those worktrees:
 
 ```sh
 sidebranch clean           # lists panes, asks to confirm, then removes them
@@ -290,17 +295,26 @@ sidebranch clean --pane a  # target a single pane
 sidebranch clean --yes     # skip the confirmation prompt (for scripts/agents)
 ```
 
-`clean` only touches git worktree state — it has no way to know whether a
-daemon is still actively serving a dev server out of one of those panes
-(no PID file exists yet), so stop the daemon first if it's running.
+`clean` refuses to run while a daemon is serving this repo — removing a
+worktree out from under a running dev server would leave it serving a
+directory that no longer exists. Run `stop` first; `clean` will tell you if
+you haven't.
+
+Both commands work on a record the daemon writes to
+`~/.sidebranch/projects/<repo>/daemon.json`. If a daemon is killed outright
+(`kill -9`, a closed terminal), that record is left behind — the next `stop`,
+`start`, or `doctor` notices it isn't real and clears it. Neither command
+will ever signal a process it hasn't confirmed is a sidebranch daemon, so a
+stale record whose pid the OS has since recycled is harmless.
 
 ## Commands
 
 ```
 sidebranch init      write starter config
 sidebranch start     run the daemon (--port N, default 49400)
+sidebranch stop      stop the daemon serving this repo
 sidebranch clean     remove stale pane worktrees for this repo (--pane, --yes)
-sidebranch doctor    environment checks
+sidebranch doctor    environment checks (including daemon status)
 ```
 
 ## Development
@@ -313,4 +327,12 @@ The suite covers the security gauntlet (token, Host/Origin gating, hostile
 ref names), the full worktree lifecycle against real fixture repos, and an
 end-to-end run that boots two panes on two branches and asserts both serve.
 
-MIT
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+One exception: the bundled UI font (`src/assets/geist-pixel.woff2`) is a
+modified build of [Geist Pixel](https://github.com/vercel/geist-font) under
+the SIL Open Font License 1.1, not MIT. Its license, copyright notices, and
+the modifications made are recorded in
+[`src/assets/geist-pixel.LICENSE.txt`](src/assets/geist-pixel.LICENSE.txt).

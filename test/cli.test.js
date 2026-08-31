@@ -134,3 +134,81 @@ test("clean without --yes refuses to delete anything from a non-interactive call
     await gitops.removeWorktree(repo, paneDir);
   }
 });
+
+/* --------------------------- daemon record / stop -------------------------- */
+
+const recordPath = () => path.join(projectDataDir(root), "daemon.json");
+
+async function writeFakeRecord(rec) {
+  await fs.mkdir(path.dirname(recordPath()), { recursive: true });
+  await fs.writeFile(recordPath(), JSON.stringify({ port: 49611, repo: root, startedAt: 1, version: 1, ...rec }));
+}
+
+async function recordExists() {
+  try { await fs.access(recordPath()); return true; } catch { return false; }
+}
+
+test("stop: no record is a no-op, not an error", async () => {
+  await fs.rm(recordPath(), { force: true });
+  const { stdout } = await sidebranch(["stop"]);
+  assert.match(stdout, /No sidebranch daemon recorded/);
+});
+
+test("stop: a record whose pid is gone is cleared, not signalled", async () => {
+  await writeFakeRecord({ pid: 999991 });
+  const { stdout } = await sidebranch(["stop"]);
+  assert.match(stdout, /no longer running/);
+  assert.equal(await recordExists(), false);
+});
+
+test("stop: a recycled pid belonging to another process is never killed", async () => {
+  // The dangerous case. The OS reuses pids, so a record left behind by a
+  // SIGKILLed daemon can name a completely unrelated process. Liveness alone
+  // must never be enough to justify sending it a signal — the /healthz probe
+  // is what distinguishes "our daemon" from "a stranger that inherited the
+  // pid". If this test ever fails, `sidebranch stop` is killing bystanders.
+  const victim = (await import("node:child_process")).spawn(
+    process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" }
+  );
+  try {
+    await writeFakeRecord({ pid: victim.pid, port: 49599 }); // nothing answers there
+    const { stdout } = await sidebranch(["stop"]);
+    assert.match(stdout, /is alive but is not a sidebranch daemon/);
+    assert.equal(victim.killed, false);
+    assert.equal(victim.exitCode, null, "the innocent process must still be running");
+    assert.equal(await recordExists(), false, "the stale record should still be cleared");
+  } finally {
+    victim.kill("SIGKILL");
+  }
+});
+
+test("stop: a corrupt record reads as no daemon rather than throwing", async () => {
+  await fs.mkdir(path.dirname(recordPath()), { recursive: true });
+  await fs.writeFile(recordPath(), "not json{");
+  const { stdout } = await sidebranch(["stop"]);
+  assert.match(stdout, /No sidebranch daemon recorded/);
+});
+
+test("clean: refuses while a daemon is running, proceeds when it is not", async () => {
+  // A live record blocks clean — this is the guarantee that replaced the
+  // README's "stop the daemon first" prose with an actual check. Simulated
+  // with this process as the pid plus a real server on the recorded port,
+  // since both liveness proofs have to hold.
+  const http = await import("node:http");
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: true }));
+  });
+  await new Promise((r) => server.listen(49598, "127.0.0.1", r));
+  try {
+    await writeFakeRecord({ pid: process.pid, port: 49598 });
+    await assert.rejects(
+      () => sidebranch(["clean", "--yes"]),
+      (err) => /daemon is running for this repo/.test(err.stderr) && err.code === 1
+    );
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+  // Same record, but nothing answers on the port any more: clean is allowed.
+  const res = await sidebranch(["clean", "--yes"]);
+  assert.doesNotMatch(res.stdout, /daemon is running/);
+});

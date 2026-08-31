@@ -1,5 +1,5 @@
 /**
- * cli.js — `sidebranch init | start | clean | doctor`
+ * cli.js — `sidebranch init | start | stop | clean | doctor`
  */
 
 import fs from "node:fs/promises";
@@ -10,12 +10,14 @@ import { loadConfig, CONFIG_FILENAME, DEFAULTS, projectDataDir } from "./config.
 import * as gitops from "./gitops.js";
 import { Manager } from "./manager.js";
 import { Daemon } from "./daemon.js";
+import { readRecord, writeRecord, clearRecord, stopDaemon, daemonFilePath } from "./daemonfile.js";
 
 const HELP = `sidebranch — local PR review sidecar
 
 Usage:
   sidebranch init            Write a starter ${CONFIG_FILENAME} in this repo
   sidebranch start [--port]  Start the daemon (default port 49400)
+  sidebranch stop            Stop the daemon running for this repo
   sidebranch clean [--pane a|b] [--yes]
                               Remove stale pane worktrees for this repo
   sidebranch doctor          Check environment and configuration
@@ -30,6 +32,7 @@ export async function main(argv) {
   switch (cmd) {
     case "init":   return init();
     case "start":  return start(parseFlags(rest));
+    case "stop":   return stop();
     case "clean":  return clean(parseCleanFlags(rest));
     case "doctor": return doctor();
     case "help":
@@ -80,24 +83,54 @@ async function init() {
 
 async function start({ port }) {
   const root = await gitops.repoRoot(process.cwd());
+
+  // Two daemons for one repo would fight over the same pane worktrees, and
+  // the loser's failure mode is a confusing git lock error rather than
+  // anything that names the real cause. Refuse up front instead.
+  const existing = await readRecord(root);
+  if (existing?.running) {
+    process.stderr.write(
+      `A sidebranch daemon is already running for this repo.\n` +
+      `  pid   ${existing.pid}\n` +
+      `  port  ${existing.port}  (http://localhost:${existing.port}/shell)\n\n` +
+      `Use that one, or run \`sidebranch stop\` first.\n`
+    );
+    return 1;
+  }
+  if (existing && !existing.running) {
+    process.stdout.write(
+      `Clearing a stale daemon record (pid ${existing.pid}${existing.pidAlive ? ", not answering" : ", gone"}).\n`
+    );
+    await clearRecord(root);
+  }
+
   const config = await loadConfig(root);
   const manager = new Manager({ repoRoot: root, config });
   const daemon = new Daemon({ manager, port });
   await daemon.start();
+  await writeRecord(root, { port });
 
   process.stdout.write(
     `sidebranch daemon running\n` +
     `  repo      ${root}\n` +
     `  worktrees ${projectDataDir(root)}\n` +
-    `  bound     http://127.0.0.1:${port}  (loopback only)\n\n` +
+    `  bound     http://127.0.0.1:${port}  (loopback only)\n` +
+    `  pid       ${process.pid}  (\`sidebranch stop\` from any terminal)\n\n` +
     `Add to your app (dev only):\n` +
     `  <script src="http://localhost:${port}/widget.js" defer></script>\n\n` +
     `Compare view: open via the widget, or http://localhost:${port}/shell\n`
   );
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return; // a second ^C must not race the first
+    shuttingDown = true;
     process.stdout.write("\nShutting down panes…\n");
     await daemon.stop().catch(() => {});
+    // Only ever clear our own record: if this process somehow outlived its
+    // record and another daemon has since claimed the repo, that daemon's
+    // record is not ours to delete.
+    await clearRecord(root, { onlyIfPid: process.pid });
     process.stdout.write(
       "Panes remain on disk for next time. Run `npx sidebranch clean` to tear down worktrees you no longer need.\n"
     );
@@ -106,6 +139,51 @@ async function start({ port }) {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   return new Promise(() => {}); // run until signaled
+}
+
+/**
+ * Stop the daemon serving this repo.
+ *
+ * SIGTERM only — the daemon's own handler is what stops pane dev servers
+ * cleanly, so escalating to SIGKILL would orphan exactly the child processes
+ * this command exists to clean up.
+ */
+async function stop() {
+  const root = await gitops.repoRoot(process.cwd());
+  const record = await readRecord(root);
+
+  if (!record) {
+    process.stdout.write(`No sidebranch daemon recorded for ${root}\n`);
+    return 0;
+  }
+  if (!record.running) {
+    // The pid is gone, or something else answers on that port now. Either
+    // way the record is a lie; clear it rather than signalling a stranger.
+    await clearRecord(root);
+    process.stdout.write(
+      record.pidAlive
+        ? `Cleared a stale record: pid ${record.pid} is alive but is not a sidebranch daemon.\n`
+        : `Cleared a stale record: pid ${record.pid} is no longer running.\n`
+    );
+    return 0;
+  }
+
+  process.stdout.write(`Stopping sidebranch daemon (pid ${record.pid}, port ${record.port})…\n`);
+  const result = await stopDaemon(record);
+  if (!result.ok) {
+    process.stderr.write(
+      `Daemon ${record.pid} did not exit within 10s. It may be mid-install.\n` +
+      `Leaving it alone rather than forcing it — check on it, or kill ${record.pid} yourself.\n`
+    );
+    return 1;
+  }
+  await clearRecord(root);
+  process.stdout.write(
+    result.alreadyGone
+      ? "Daemon was already gone; record cleared.\n"
+      : "Stopped. Pane worktrees remain on disk — `sidebranch clean` removes them.\n"
+  );
+  return 0;
 }
 
 function parseCleanFlags(rest) {
@@ -118,10 +196,9 @@ function parseCleanFlags(rest) {
 }
 
 /**
- * Panes are worktrees that outlive the daemon (no `sidebranch stop`/PID
- * file tracks them) — this walks the on-disk pane directories for the
- * current repo and cross-references `git worktree list` to report what's
- * there, without requiring a running daemon.
+ * Panes are worktrees that outlive the daemon — this walks the on-disk pane
+ * directories for the current repo and cross-references `git worktree list`
+ * to report what's there, without requiring a running daemon.
  */
 async function findPanes(root, paneFilter) {
   const panesRoot = path.join(projectDataDir(root), "panes");
@@ -148,6 +225,20 @@ async function findPanes(root, paneFilter) {
 
 async function clean({ pane, yes }) {
   const root = await gitops.repoRoot(process.cwd());
+
+  // clean used to be blind here, and the README had to carry the warning in
+  // prose. Removing a worktree out from under a running dev server leaves a
+  // process serving a directory that no longer exists — refuse instead.
+  const record = await readRecord(root);
+  if (record?.running) {
+    process.stderr.write(
+      `A sidebranch daemon is running for this repo (pid ${record.pid}, port ${record.port}).\n` +
+      `Removing its worktrees now would leave pane dev servers running against\n` +
+      `deleted directories. Run \`sidebranch stop\` first.\n`
+    );
+    return 1;
+  }
+
   const rows = await findPanes(root, pane);
 
   if (pane && rows.length === 0) {
@@ -162,9 +253,7 @@ async function clean({ pane, yes }) {
   process.stdout.write(`Panes for ${root}:\n`);
   for (const r of rows) process.stdout.write(`  ${r.id}   ${r.label}   ${r.dir}\n`);
   process.stdout.write(
-    "\nThis removes the worktree(s) listed above; nothing else is touched. If the\n" +
-    "sidebranch daemon for this project is still running, stop it first — clean\n" +
-    "doesn't track live dev-server processes, only git worktree state.\n\n"
+    "\nThis removes the worktree(s) listed above; nothing else is touched.\n\n"
   );
 
   if (!yes) {
@@ -220,6 +309,18 @@ async function doctor() {
     push("git repository", false, "run inside a git repo");
   }
   push("node version", Number(process.versions.node.split(".")[0]) >= 20, process.versions.node);
+
+  try {
+    const root = await gitops.repoRoot(process.cwd());
+    const record = await readRecord(root);
+    if (!record) push("daemon", true, "not running");
+    else if (record.running) push("daemon", true, `running — pid ${record.pid}, port ${record.port}`);
+    else {
+      // Not a failure: a stale record is self-healing, both `start` and
+      // `stop` clear it. Say so rather than reporting a scary FAIL.
+      push("daemon", true, `stale record (pid ${record.pid} ${record.pidAlive ? "not answering" : "gone"}) — \`sidebranch stop\` clears it`);
+    }
+  } catch { /* not a git repo; already reported above */ }
 
   for (const c of checks) {
     process.stdout.write(`${c.ok ? " ok " : "FAIL"}  ${c.name}${c.note ? ` — ${c.note}` : ""}\n`);

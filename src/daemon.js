@@ -8,6 +8,8 @@
  *   - Rejects any request whose Origin is present and not loopback.
  *   - Every /api/* request requires the session bearer token.
  *   - Serves only embedded assets; no filesystem paths are derived from URLs.
+ *   - /handshake and the three assets are unauthenticated by necessity: they
+ *     bootstrap the token. Everything under /api/* requires it.
  *   - Responds with strict security headers; the shell page carries a CSP.
  */
 
@@ -25,6 +27,19 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS = path.join(__dirname, "assets");
 
+/**
+ * The /api/* contract version, reported by GET /handshake.
+ *
+ * The npm package and the browser extension update on different clocks and
+ * will drift. Bump this ONLY when a change would break an older widget —
+ * adding a field to a response is not a break, changing or removing one is.
+ */
+export const API_VERSION = 1;
+
+const VERSION = JSON.parse(
+  await fs.readFile(new URL("../package.json", import.meta.url), "utf8")
+).version;
+
 export class Daemon {
   constructor({ manager, port = 49400 }) {
     this.manager = manager;
@@ -37,9 +52,16 @@ export class Daemon {
   }
 
   async start() {
-    this.widgetSrc = await fs.readFile(path.join(ASSETS, "widget.js"), "utf8");
+    // The widget ships as core + a boot that supplies credentials; the tag
+    // channel's boot is the one with placeholders in it. Concatenated here
+    // rather than at request time so a malformed asset fails at startup.
+    const [core, bootTag] = await Promise.all([
+      fs.readFile(path.join(ASSETS, "widget-core.js"), "utf8"),
+      fs.readFile(path.join(ASSETS, "boot-tag.js"), "utf8"),
+    ]);
+    this.widgetSrc = `${core}\n${bootTag}`;
     this.shellSrc = await fs.readFile(path.join(ASSETS, "shell.html"), "utf8");
-    this.fontSrc = await fs.readFile(path.join(ASSETS, "geist-pixel.ttf"));
+    this.fontSrc = await fs.readFile(path.join(ASSETS, "geist-pixel.woff2"));
 
     this.server = http.createServer((req, res) => {
       this.handle(req, res).catch((err) => {
@@ -125,7 +147,8 @@ export class Daemon {
     // if we wanted it to be. Unlike widget.js/shell (no-store — they embed a
     // token that rotates every run), this file never changes for a given
     // version of the tool, so it's cached aggressively.
-    if (route === "GET /geist-pixel.ttf") return this.serveFont(res);
+    if (route === "GET /geist-pixel.woff2") return this.serveFont(res);
+    if (route === "GET /handshake") return this.serveHandshake(res);
     if (route === "GET /healthz") return json(res, 200, { ok: true });
 
     if (!url.pathname.startsWith("/api/")) return json(res, 404, { error: "Not found" });
@@ -180,6 +203,37 @@ export class Daemon {
     res.end(src);
   }
 
+  /**
+   * Credential bootstrap for callers that cannot consume a rendered template
+   * — i.e. the browser extension, whose content script ships `widget-core.js`
+   * in its own package because Manifest V3 forbids executing remotely-fetched
+   * code, and so has nowhere for a substituted token to arrive.
+   *
+   * This discloses nothing that `GET /widget.js` does not already disclose:
+   * any caller that clears the gate above can read the token straight out of
+   * the widget response body today. SECURITY.md's "token delivery is
+   * unauthenticated by necessity" covers both; this is the same disclosure
+   * with an honest shape instead of a string-substituted one.
+   *
+   * Deliberately NOT under /api/*, because the bearer check there is exactly
+   * what this endpoint exists to bootstrap.
+   */
+  serveHandshake(res) {
+    res.setHeader("Cache-Control", "no-store");
+    json(res, 200, {
+      token: this.token,
+      port: this.port,
+      // Honors `"widget": false` in .sidebranch.json, which the tag channel
+      // honors by serving a no-op body. The extension has to be told.
+      widget: this.manager.config.widget === true,
+      version: VERSION,
+      // Bumped only on a breaking change to the shapes below /api/*. The
+      // extension refuses to render on a mismatch rather than half-working
+      // against a daemon it doesn't understand.
+      apiVersion: API_VERSION,
+    });
+  }
+
   serveShell(res) {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
@@ -207,7 +261,7 @@ export class Daemon {
   }
 
   serveFont(res) {
-    res.setHeader("Content-Type", "font/ttf");
+    res.setHeader("Content-Type", "font/woff2");
     // No token, no per-run state in this file — safe to cache hard, unlike
     // widget.js/shell above.
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
