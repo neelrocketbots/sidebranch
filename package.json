@@ -1,0 +1,16 @@
+{
+  "name": "sidebranch",
+  "version": "0.1.0",
+  "description": "Framework-agnostic sidecar for reviewing PRs locally: switch branches from an in-page widget and compare worktrees side by side.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "bin": { "sidebranch": "bin/sidebranch.js" },
+  "files": ["bin", "src", "README.md", "SECURITY.md", "LICENSE"],
+  "scripts": {
+    "start": "node bin/sidebranch.js start",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "keywords": ["git", "worktree", "pr-review", "devtools", "sidecar", "branch"],
+  "dependencies": {}
+}

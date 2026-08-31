@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sidebranch — compare</title>
+<!-- Same mark as the .dock .brand icon below — kept as a data: URI so the
+     favicon needs no new daemon route (img-src data: is already allowed by
+     this page's CSP; see AGENTS.md's "exactly N embedded assets" note). -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23191919'/%3E%3Cpath fill='%23fff' transform='translate(14.85 14.85) scale(0.7)' d='M45 11C50.5228 11 55 15.4772 55 21V39H40C34.4772 39 30 43.4772 30 49V78C30 83.5228 34.4772 88 40 88H26C20.4772 88 16 83.5228 16 78V21C16 15.4772 20.4772 11 26 11H45ZM73 39C78.5228 39 83 43.4772 83 49V78C83 83.5228 78.5228 88 73 88H45C50.5228 88 55 83.5228 55 78V39H73Z'/%3E%3C/svg%3E">
+<style>
+  @font-face{font-family:"Geist Pixel";src:url("http://localhost:__SIDEBRANCH_PORT__/geist-pixel.ttf") format("truetype");font-display:swap}
+  :root{
+    --bg:#191919; --surface:#222; --line:rgba(255,255,255,.11);
+    --text:#d7dce2; --muted:#8a949e; --ok:#59c26f; --err:#e5534b;
+    --ease:cubic-bezier(0.34,0.8,0.23,0.97); --surface-high: #444;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--text);
+    font:13px/1.5 "Geist Pixel","Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    display:flex;flex-direction:column}
+  button,input{font:inherit;color:inherit;background:none;border:0}
+  button{cursor:pointer}
+  :focus-visible{outline:1px solid rgba(255,255,255,.55);outline-offset:1px}
+
+  /* ---- stage + per-panel header (controls live directly above their own
+     panel, so they always track whatever width that panel currently has —
+     fixed px, or "fit" — with no separate alignment logic needed) ---- */
+  main{flex:1;overflow:auto;position:relative;display:flex;justify-content:center;align-items:stretch;
+    gap:18px;padding:24px 24px 100px}
+  /* 220px is the header's own floor (badge + branch trigger's 90px min + sha
+     + gaps/padding) — below it the trigger would need to shrink past a usable
+     width, which is what used to force the two panes' headers to overlap
+     instead of the frames just stopping their shrink and letting `main`
+     (overflow:auto) scroll horizontally. */
+  .frame{display:flex;flex-direction:column;min-width:220px;flex:none}
+  .pane-hd{display:flex;align-items:center;gap:10px;padding:0 8px 12px}
+  .pane-hd .k{font-size:12px;padding:3px 9px;border-radius:999px;color:var(--ok);background:rgba(89,194,111,.12);flex:none}
+
+  /* ---- searchable branch dropdown (replaces the native <select>) ----
+     A trigger button styled like the old select, plus a filterable listbox
+     popup — the same visual language as the injected widget's branch flyout.
+     Flexible instead of a fixed 300px: the trigger shrinks with the frame
+     (down to min-width) rather than overflowing it, and grows up to max-width
+     when there's room; white-space/text-overflow keep a long branch name to
+     one line with an ellipsis. The popup is position:fixed and placed via JS
+     (the #tooltip technique) so main's overflow:auto never clips it and it
+     survives being reparented into pane A's header in stacked modes. */
+  .branch-select{flex:1 1 140px;min-width:90px;max-width:300px;position:relative}
+  .bs-trigger{display:flex;align-items:center;gap:8px;width:100%;background:var(--surface);
+    border:1px solid rgba(255,255,255,.04);border-radius:8px;padding:8px 10px;font-size:14px;text-align:left;
+    transition:border-color .15s var(--ease)}
+  .bs-trigger:hover,.bs-trigger[aria-expanded="true"]{border-color:rgba(255,255,255,.25)}
+  .bs-value{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bs-trigger.placeholder .bs-value{color:var(--muted)}
+  .bs-chev{flex:none;color:var(--muted);transition:rotate .15s var(--ease);transform-origin:center}
+  .bs-trigger[aria-expanded="true"] .bs-chev{rotate:180deg}
+
+  .bs-popup{position:fixed;z-index:11;display:flex;flex-direction:column;min-width:220px;max-height:60vh;
+    overflow:hidden;background:var(--surface);border:1px solid var(--line);border-radius:8px;
+    box-shadow:0 8px 24px rgba(0,0,0,.35);
+    opacity:0;transform:scale(.98) translateY(-4px);pointer-events:none;
+    transition:opacity .14s var(--ease),transform .14s var(--ease)}
+  .bs-popup.open{opacity:1;transform:none;pointer-events:auto}
+  .bs-search{display:flex;align-items:center;border-bottom:1px solid var(--line)}
+  .bs-filter{flex:1;min-width:0;padding:9px 11px;outline:0;font-size:13px}
+  .bs-filter::placeholder{color:var(--muted)}
+  /* Replace the UA search-cancel glyph (a gray gradient X) with a plain white,
+     round-capped X on a rounded hover chip, matching this file's icon style. */
+  .bs-filter::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none;
+    width:16px;height:16px;border-radius:999px;cursor:pointer;
+    background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23fff' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M4.5 4.5l7 7M11.5 4.5l-7 7'/%3E%3C/svg%3E") center/11px no-repeat;
+    transition:background-color .15s var(--ease)}
+  .bs-filter::-webkit-search-cancel-button:hover{background-color:rgba(255,255,255,.14)}
+  .bs-fetch{flex:none;display:flex;align-items:center;justify-content:center;width:30px;height:30px;
+    margin-right:5px;border-radius:7px;color:var(--muted);
+    transition:background .15s var(--ease),color .15s var(--ease)}
+  .bs-fetch:hover{background:rgba(255,255,255,.09);color:#fff}
+  .bs-fetch:disabled{opacity:.6;cursor:default}
+  .bs-fetch.spinning svg{animation:bs-spin .8s linear infinite}
+  @keyframes bs-spin{to{transform:rotate(360deg)}}
+  .bs-list{overflow-y:auto;flex:1;max-height:300px;padding:4px}
+  /* .active = the roving keyboard highlight (aria-activedescendant);
+     aria-selected = the branch this pane is actually showing right now. */
+  .bs-option{display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border-radius:6px;
+    text-align:left;white-space:nowrap;cursor:pointer}
+  .bs-option .bs-opt-name{flex:1;overflow:hidden;text-overflow:ellipsis}
+  .bs-option:hover,.bs-option.active{background:rgba(255,255,255,.08)}
+  .bs-option[aria-selected="true"]{background:rgba(89,194,111,.12)}
+  .bs-option[aria-selected="true"] .bs-opt-name{color:var(--ok)}
+  .bs-check{flex:none;color:var(--ok);opacity:0}
+  .bs-option[aria-selected="true"] .bs-check{opacity:1}
+  .bs-empty{padding:10px 11px;color:var(--muted)}
+  @media (prefers-reduced-motion:reduce){.bs-popup,.bs-chev{transition:none}.bs-fetch.spinning svg{animation:none}}
+
+  .pane-sha{font-size:12px;color:var(--muted);flex:none;font-variant-numeric:tabular-nums}
+  .muted{color:var(--muted);}
+
+  /* B's select/sha travel as one unit into pane A's header while stacked
+     (blend/onion), since frame.b itself is hidden then — see setMode().
+     Keeps B always selectable, in every mode. The k-b override (only when
+     nested inside pane-hd.a) keeps the two badges visually distinct instead
+     of both reading as green "A" pills. */
+  .b-controls{display:flex;align-items:center;gap:10px;flex:none;min-width:0;
+    opacity:1;transition:opacity .18s var(--ease)}
+  /* In side-by-side, B's controls are the pane header's only child — let them
+     fill it so B's branch trigger grows to exactly match A's (whose trigger is
+     a direct flex child of its own header). While stacked, b-controls rides
+     into pane A's header, where it must stay content-width (flex:none default). */
+  .pane-hd.b > .b-controls{flex:1}
+  .b-controls:not(:first-child){border-left:1px solid var(--line);padding-left:16px}
+  .b-controls.fade-out{opacity:0}
+  .pane-hd.a .k-b{color:var(--muted);background:rgba(255,255,255,.05)}
+
+  /* swap sits between the two panels, out of the flex flow so it never
+     perturbs the width-sync math between frame.a and frame.b */
+  #swap{position:absolute;top:50%;left:50%;transform:translate(-50%, -50%);z-index:6;
+    width:32px;height:32px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+    background:var(--surface-high);color:var(--muted);
+    /* same halo + elevation shadow as .frame .vp, so the swap button reads
+       as floating over the panels rather than flat against the page */
+    box-shadow:0 0 6px rgba(0,0,0,.2);
+    transition:background .15s var(--ease),color .15s var(--ease)}
+  #swap:hover{background:#555;color:#fff}
+
+  .frame .vp{flex:1;background:var(--surface);border-radius:16px;overflow:hidden;position:relative;
+    /* no border — a tight 1px "halo" shadow stands in for a hairline
+       border, plus a soft, wider shadow for elevation. */
+    box-shadow:0 0 0 1px rgba(255,255,255,.09),0 0 6px rgba(0,0,0,.4)}
+  /* Rounded corners here have two independent seam sources, both closed
+     above rather than masked:
+     1) overflow:hidden anti-aliases its clip boundary by blending the
+        clipped child's edge pixels against THIS element's own background.
+        With background:#fff behind a dark .empty overlay (or any dark
+        page loaded in the iframe), that blend read as a bright hairline
+        right on the curve — matching var(--surface), the color actually
+        painted behind the curve in every real case, makes the blend a
+        no-op instead of a visible line.
+     2) iframes are promoted to their own compositor layer, so the
+        ancestor's rounded clip and the iframe's layer boundary can get
+        rasterized independently — Chromium/WebKit sometimes leave a
+        hairline sliver of whatever's behind the iframe peeking past the
+        curve. clip-path (a compositor-level mask, applied uniformly across
+        child layers) layered on top of the overflow:hidden clip, plus
+        translateZ(0) promoting .vp to its own layer so its clip resolves
+        in the same compositing space as the iframe's, close this from the
+        ancestor side. Clipping the iframe to the same radius on itself
+        (below) only stops the iframe's own paint from exceeding the curve
+        — it doesn't control what shows through *between* the two curves,
+        which is why it alone wasn't enough. */
+  iframe{width:100%;height:100%;border:0;display:block;background:var(--surface);border-radius:inherit}
+
+  /* ---- zero state ---- */
+  .vp .empty:not([hidden]){position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:10px;text-align:center;padding:32px;
+    background:var(--surface);color:var(--muted)}
+  .empty-spin{font-size:18px;color:rgba(255,255,255,.55);min-height:1.3em;line-height:1}
+  .empty-h{font-size:16px;font-weight:600;color:var(--text)}
+  .empty-s{font-size:13px;color:var(--muted);max-width:30ch;line-height:1.5}
+  .empty.err .empty-h{color:var(--err)}
+
+  /* ---- drag-to-resize handle, DevTools-style ---- */
+  .resize-handle{position:absolute;top:0;bottom:0;right:-9px;width:18px;
+    cursor:ew-resize;z-index:5;touch-action:none}
+  .resize-handle::after{content:"";position:absolute;top:0;bottom:0;left:50%;width:2px;
+    background:var(--surface);transform:translateX(-50%);transition:background .15s var(--ease)}
+  .resize-handle:hover::after,.resize-handle.dragging::after{background:rgba(255,255,255,.55)}
+  main.stacked .resize-handle{display:none}
+  main.stacked #swap{display:none}
+
+  /* stacked diff modes — #fb is physically moved into frame A's viewport
+     (see moveIntoStack/moveOutOfStack in the script) rather than duplicated
+     into a second "ghost" iframe, so the overlay always reflects whatever
+     is actually loaded in pane B (including any client-side navigation the
+     reviewer has done, e.g. logging in) instead of a stale fresh load. */
+  main.stacked{align-items:stretch}
+  main.stacked .frame.b{position:absolute;visibility:hidden}
+  main.stacked .frame.a .vp{isolation:isolate}
+  main.stacked .frame.a .vp iframe{position:absolute;inset:0}
+
+  /* ---- floating bottom dock — never overlaps the panels; main's bottom
+     padding above reserves exactly enough room for it. No borders anywhere
+     in here — distinction is background-only. ---- */
+  .dock{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:10;
+    display:flex;align-items:center;gap:12px;padding:10px;border-radius:999px;
+    background:var(--surface);box-shadow:0 4px 34px rgba(0,0,0,.25)}
+  .dock .brand{display:flex;align-items:center;color:#fff;padding-left:8px}
+  .dock-sep{width:1px;height:18px;background:var(--line);flex:none}
+
+  /* mode switcher: squared off, icon-only, subtler than the rest of the
+     dock's fully-rounded pill controls, with a themed tooltip per mode
+     (see the #tooltip rules below) */
+  .seg{display:flex;border-radius:7px;overflow:hidden;background:rgba(255,255,255,.04)}
+  .seg button{width:34px;height:32px;display:flex;align-items:center;justify-content:center;
+    color:var(--muted);transition:background .15s var(--ease),color .15s var(--ease)}
+  .seg button[aria-pressed="true"]{background:rgba(255,255,255,.14);color:#fff}
+  .seg button:hover{color:#fff}
+
+  /* themed tooltip for the mode buttons — a native `title` would work, but
+     its OS-styled popup and ~1s show-delay clash with the rest of this
+     dock's fast, dark-themed flyouts. One shared #tooltip element is
+     positioned via JS (getBoundingClientRect) rather than CSS anchored to
+     the button itself, since .seg's overflow:hidden (needed for its rounded
+     segmented-control shape) would otherwise clip anything popping out of a
+     button's own box. */
+  #tooltip{position:fixed;left:0;top:0;z-index:12;padding:8px 12px;border-radius:8px;
+    background:var(--surface);box-shadow:0 10px 26px rgba(0,0,0,.45);max-width:220px;
+    transform-origin:bottom center;transform:translate(-50%,-100%) translateY(4px) scale(.96);
+    opacity:0;pointer-events:none;transition:opacity .14s var(--ease),transform .14s var(--ease)}
+  #tooltip.open{opacity:1;transform:translate(-50%,-100%) translateY(0) scale(1)}
+  #tooltip .tt-title{font-size:12px;font-weight:600;color:#fff;line-height:1.4;white-space:nowrap}
+  #tooltip .tt-sub{font-size:12px;color:var(--muted);line-height:1.4;margin-top:2px}
+
+  .icon-btn{width:32px;height:32px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+    color:var(--muted);background:rgba(255,255,255,.04);flex:none;
+    transition:background .15s var(--ease),color .15s var(--ease)}
+  .icon-btn:hover{background:rgba(255,255,255,.09);color:#fff}
+
+  /* onion opacity control: fixed to the top, opposite corner from the pane
+     selects (which live at top-left once stacked — see .b-controls above),
+     so it doesn't compete with the dock at the bottom. Slides down + fades
+     in when onion mode is entered, and reverses on the way out. */
+  .onion-ctl{position:fixed;top:24px;right:24px;z-index:8;
+    display:flex;align-items:center;gap:9px;padding:9px 13px;border-radius:10px;
+    background:var(--surface);box-shadow:0 12px 30px rgba(0,0,0,.5);white-space:nowrap;color:var(--muted);
+    opacity:0;pointer-events:none;transform:translateY(-10px) scale(.96);
+    transition:opacity .18s var(--ease),transform .18s var(--ease)}
+  .onion-ctl.visible{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+  .onion-ctl input[type=range]{
+    -webkit-appearance:none;appearance:none;width:120px;height:4px;border-radius:999px;
+    background:rgba(255,255,255,.14);outline:none;cursor:pointer}
+  .onion-ctl input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;
+    box-shadow:0 1px 4px rgba(0,0,0,.4);cursor:pointer;transition:transform .15s var(--ease)}
+  .onion-ctl input[type=range]:hover::-webkit-slider-thumb{transform:scale(1.15)}
+  .onion-ctl input[type=range]::-moz-range-track{background:rgba(255,255,255,.14);height:4px;border-radius:999px}
+  .onion-ctl input[type=range]::-moz-range-thumb{
+    width:14px;height:14px;border-radius:50%;background:#fff;border:0;box-shadow:0 1px 4px rgba(0,0,0,.4);cursor:pointer}
+
+  .w-ctl{display:flex;align-items:center;gap:6px}
+  /* squared off — deliberately contrasts with the fully-rounded pill
+     controls elsewhere in the dock, per request */
+  #width-out{width:7ch;text-align:left;font-variant-numeric:tabular-nums;
+    border-radius:6px;padding:5px 7px;
+    transition:background .15s var(--ease)}
+  #width-out:hover{background:rgba(255,255,255,.09)}
+  #width-out:focus-visible{outline:1px solid rgba(255,255,255,.55);outline-offset:0}
+
+  /* ---- status bubble — floats above the dock, never shifts its width ---- */
+  #status-bubble{position:fixed;left:50%;bottom:80px;z-index:9;
+    display:flex;align-items:center;gap:7px;padding:7px 12px;border-radius:8px;
+    background:var(--surface);box-shadow:0 10px 26px rgba(0,0,0,.45);
+    white-space:nowrap;opacity:0;pointer-events:none;
+    transform:translateX(-50%) translateY(6px) scale(.96);
+    transition:opacity .16s var(--ease),transform .16s var(--ease)}
+  #status-bubble.open{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}
+  #status-bubble.err{color:var(--err)}
+  #status-bubble .spinner{color:rgba(255,255,255,.55);min-width:1ch;text-align:center}
+  @media (prefers-reduced-motion:reduce){
+    .bs-trigger,#swap,.resize-handle::after,.seg button,.icon-btn,.onion-ctl,.b-controls,#width-out,#status-bubble,#tooltip{transition:none}
+  }
+</style>
+</head>
+<body>
+<main id="stage">
+  <section class="frame a">
+    <div class="pane-hd a"><span class="k">A</span>
+      <div class="branch-select" data-pane="a"></div>
+      <span class="pane-sha" id="sha-a"></span>
+    </div>
+    <div class="vp">
+      <iframe id="fa" title="Pane A"></iframe>
+      <div class="empty" id="empty-a" hidden>
+        <div class="empty-spin" aria-hidden="true"></div>
+        <div class="empty-h"></div>
+        <div class="empty-s"></div>
+      </div>
+      <div class="resize-handle" data-handle title="Drag to resize both panes (double-click to fit)"></div>
+    </div>
+  </section>
+
+  <button id="swap" title="Swap A and B" aria-label="Swap panes A and B">
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 5h9M9 2.5 12 5 9 7.5"/>
+      <path d="M13 11H4M7 8.5 4 11 7 13.5"/>
+    </svg>
+  </button>
+
+  <section class="frame b">
+    <div class="pane-hd b"><div class="b-controls" id="b-controls">
+      <span class="k k-b">B</span>
+      <div class="branch-select" data-pane="b"></div>
+      <span class="pane-sha" id="sha-b"></span>
+    </div></div>
+    <div class="vp">
+      <iframe id="fb" title="Pane B"></iframe>
+      <div class="empty" id="empty-b" hidden>
+        <div class="empty-spin" aria-hidden="true"></div>
+        <div class="empty-h"></div>
+        <div class="empty-s"></div>
+      </div>
+      <div class="resize-handle" data-handle title="Drag to resize both panes (double-click to fit)"></div>
+    </div>
+  </section>
+</main>
+
+<div id="status-bubble" role="status" aria-live="polite">
+  <span class="spinner" aria-hidden="true"></span><span class="msg"></span>
+</div>
+
+<div id="tooltip" role="tooltip">
+  <div class="tt-title"></div>
+  <div class="tt-sub"></div>
+</div>
+
+<div class="onion-ctl" id="onion-ctl">
+  <label for="opacity">B opacity</label>
+  <input type="range" id="opacity" min="0" max="100" value="50">
+</div>
+
+<div class="dock" role="toolbar" aria-label="sidebranch compare controls">
+  <span class="brand" aria-label="sidebranch">
+    <svg viewBox="0 0 100 100" width="16" height="16" fill="currentColor" aria-hidden="true">
+      <path d="M45 11C50.5228 11 55 15.4772 55 21V39H40C34.4772 39 30 43.4772 30 49V78C30 83.5228 34.4772 88 40 88H26C20.4772 88 16 83.5228 16 78V21C16 15.4772 20.4772 11 26 11H45ZM73 39C78.5228 39 83 43.4772 83 49V78C83 83.5228 78.5228 88 73 88H45C50.5228 88 55 83.5228 55 78V39H73Z"/>
+    </svg>
+  </span>
+  <div class="dock-sep"></div>
+
+  <div class="seg" role="group" aria-label="View mode">
+    <button data-mode="side" aria-pressed="true" aria-label="Side by side"
+      data-tip-title="Side by side" data-tip-sub="View both panes independently, at the same width">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <rect x="1.5" y="3" width="5.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+        <rect x="9" y="3" width="5.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      </svg>
+    </button>
+    <button data-mode="blend" aria-pressed="false" aria-label="Blend diff"
+      data-tip-title="Blend diff" data-tip-sub="Panes stacked with mix-blend-mode: difference — identical pixels go black, changes glow">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" stroke="currentColor" stroke-width="1.3">
+        <circle cx="6.2" cy="6.2" r="4.6" fill="currentColor" fill-opacity="0.18"/>
+        <circle cx="9.8" cy="9.8" r="4.6" fill="currentColor" fill-opacity="0.18"/>
+      </svg>
+    </button>
+    <button data-mode="onion" aria-pressed="false" aria-label="Onion"
+      data-tip-title="Layer diff" data-tip-sub="Panes stacked with an opacity slider over the top pane">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="8,2.45 13.5,5.85 8,9.25 2.5,5.85"/>
+        <polyline points="2.5,10.15 8,13.55 13.5,10.15"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="dock-sep"></div>
+
+  <div class="w-ctl">
+    <span class="muted">w:</span>
+    <input type="text" id="width-out" inputmode="numeric"
+      aria-label="Pane width in pixels — type a value or drag a pane edge">
+    <button class="icon-btn" data-w="375" title="Phone (375px)" aria-label="Set width to 375px (phone)">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="4.5" y="1.5" width="7" height="13" rx="1.3"/><line x1="6.5" y1="12" x2="9.5" y2="12"/>
+      </svg>
+    </button>
+    <button class="icon-btn" data-w="768" title="Tablet (768px)" aria-label="Set width to 768px (tablet)">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="2.5" y="1.5" width="11" height="13" rx="1.3"/><line x1="6.5" y1="12.3" x2="9.5" y2="12.3"/>
+      </svg>
+    </button>
+    <button class="icon-btn" data-w="1280" title="Desktop (1280px)" aria-label="Set width to 1280px (desktop)">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="1.5" y="2.5" width="13" height="8.5" rx="1"/><line x1="5.5" y1="14" x2="10.5" y2="14"/><line x1="8" y1="11" x2="8" y2="14"/>
+      </svg>
+    </button>
+    <button class="icon-btn" data-w="0" title="Fit" aria-label="Fit to available space">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 8h12M2 8l2.5-2.5M2 8l2.5 2.5M14 8l-2.5-2.5M14 8l-2.5 2.5"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const TOKEN = "__SIDEBRANCH_TOKEN__";
+  const DAEMON = "http://localhost:__SIDEBRANCH_PORT__";
+  const $ = (s) => document.querySelector(s);
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+  const api = async (p, opts = {}) => {
+    const res = await fetch(DAEMON + p, {
+      ...opts,
+      headers: { Authorization: "Bearer " + TOKEN,
+        ...(opts.body ? { "Content-Type": "application/json" } : {}) },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  };
+
+  let state = null;
+  const paneById = (id) => state?.panes?.find((p) => p.id === id) || null;
+
+  /* ------------------------------ status bubble --------------------------- */
+  const statusBubble = $("#status-bubble");
+  const statusMsg = statusBubble.querySelector(".msg");
+  const statusSpin = statusBubble.querySelector(".spinner");
+  let dockSpinTimer = null;
+  function setStatus(t, err = false) {
+    if (dockSpinTimer) { clearInterval(dockSpinTimer); dockSpinTimer = null; }
+    if (!t) { statusBubble.classList.remove("open", "err"); statusSpin.textContent = ""; return; }
+    statusBubble.classList.add("open");
+    statusBubble.classList.toggle("err", err);
+    statusMsg.textContent = t;
+    if (!err) {
+      if (reducedMotion) { statusSpin.textContent = "•"; }
+      else {
+        let i = 0; statusSpin.textContent = SPIN_FRAMES[0];
+        dockSpinTimer = setInterval(() => { i = (i + 1) % SPIN_FRAMES.length; statusSpin.textContent = SPIN_FRAMES[i]; }, 90);
+      }
+    } else {
+      statusSpin.textContent = "";
+    }
+  }
+
+  /* ------------------------------ per-pane empty state --------------------------- */
+  const paneSpinTimers = { a: null, b: null };
+  function stopPaneSpin(id) {
+    if (paneSpinTimers[id]) { clearInterval(paneSpinTimers[id]); paneSpinTimers[id] = null; }
+  }
+  function startPaneSpin(id, el) {
+    stopPaneSpin(id);
+    if (reducedMotion) { el.textContent = "•"; return; }
+    let i = 0; el.textContent = SPIN_FRAMES[0];
+    paneSpinTimers[id] = setInterval(() => { i = (i + 1) % SPIN_FRAMES.length; el.textContent = SPIN_FRAMES[i]; }, 90);
+  }
+  function setEmpty(id, headline, sub, spinning, isErr) {
+    const empty = $("#empty-" + id);
+    empty.classList.toggle("err", !!isErr);
+    empty.querySelector(".empty-h").textContent = headline;
+    empty.querySelector(".empty-s").textContent = sub;
+    const spinEl = empty.querySelector(".empty-spin");
+    if (spinning) startPaneSpin(id, spinEl);
+    else { stopPaneSpin(id); spinEl.textContent = ""; }
+  }
+
+  /* ------------------------- searchable branch dropdown -------------------------
+     Replaces the native <select> per pane with a filterable combobox popup —
+     the same visual language as the injected widget's branch flyout. The popup
+     is position:fixed and placed via getBoundingClientRect (the #tooltip
+     technique) so main's overflow:auto never clips it and it survives being
+     reparented into pane A's header in stacked modes. Follows the APG combobox
+     pattern: a trigger button opens a listbox whose active option is tracked
+     with aria-activedescendant while DOM focus stays on the filter input, so
+     keyboard and AT behavior stay on par with the native <select> it replaces. */
+  function makeBranchSelect(root, paneId) {
+    const label = `Pane ${paneId.toUpperCase()} branch`;
+    const listId = `bs-${paneId}-list`;
+    root.innerHTML = `
+      <button type="button" class="bs-trigger placeholder" aria-haspopup="listbox" aria-expanded="false" aria-label="${label}">
+        <span class="bs-value">— none —</span>
+        <svg class="bs-chev" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
+      </button>
+      <div class="bs-popup" inert>
+        <div class="bs-search">
+          <input class="bs-filter" type="search" role="combobox" aria-expanded="false" aria-controls="${listId}" aria-autocomplete="list" autocomplete="off" placeholder="Filter branches…" aria-label="Filter ${label} list">
+          <button type="button" class="bs-fetch" title="Fetch remotes (git fetch --all)" aria-label="Fetch remotes">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+          </button>
+        </div>
+        <div class="bs-list" id="${listId}" role="listbox" aria-label="${label}"></div>
+      </div>`;
+    const trigger = root.querySelector(".bs-trigger");
+    const valueEl = root.querySelector(".bs-value");
+    const popup = root.querySelector(".bs-popup");
+    const filter = root.querySelector(".bs-filter");
+    const fetchBtn = root.querySelector(".bs-fetch");
+    const list = root.querySelector(".bs-list");
+
+    let isOpen = false;
+    let filterText = "";
+    let activeIndex = -1;
+    // The branch just picked, shown right away while the daemon rebuilds the
+    // pane — state.panes[…].branch only flips once the switch/install finishes,
+    // so without this the trigger would lag behind the reviewer's choice.
+    let optimistic = null;
+
+    const branches = () => state?.branches || [];
+    const currentBranch = () => paneById(paneId)?.branch || "";
+    const isRemoteOnly = (name) => {
+      const b = branches().find((x) => x.name === name);
+      return b ? !b.local : false;
+    };
+    /** Optimistic pick until live state catches up, then the real branch. */
+    function displayedBranch() {
+      const cur = currentBranch();
+      if (optimistic && optimistic !== cur) return optimistic;
+      optimistic = null;
+      return cur;
+    }
+
+    function syncTrigger() {
+      const cur = displayedBranch();
+      trigger.classList.toggle("placeholder", !cur);
+      valueEl.textContent = cur ? cur + (isRemoteOnly(cur) ? " ⇣" : "") : "— none —";
+    }
+
+    function positionPopup() {
+      const r = trigger.getBoundingClientRect();
+      const width = Math.max(r.width, 220);
+      let left = r.left;
+      if (left + width > window.innerWidth - 8) left = window.innerWidth - 8 - width;
+      popup.style.left = Math.max(8, left) + "px";
+      popup.style.top = r.bottom + 4 + "px";
+      popup.style.width = width + "px";
+    }
+
+    function setActive(i) {
+      const opts = list.querySelectorAll(".bs-option");
+      if (!opts.length) { activeIndex = -1; filter.removeAttribute("aria-activedescendant"); return; }
+      activeIndex = (i + opts.length) % opts.length;
+      opts.forEach((o, idx) => o.classList.toggle("active", idx === activeIndex));
+      const active = opts[activeIndex];
+      filter.setAttribute("aria-activedescendant", active.id);
+      active.scrollIntoView({ block: "nearest" });
+    }
+
+    function renderList() {
+      const cur = displayedBranch();
+      const q = filterText.toLowerCase();
+      const items = branches().filter((b) => b.name.toLowerCase().includes(q));
+      if (!items.length) {
+        list.replaceChildren(Object.assign(document.createElement("div"), { className: "bs-empty", textContent: "No matching branches." }));
+        activeIndex = -1;
+        filter.removeAttribute("aria-activedescendant");
+        return;
+      }
+      list.replaceChildren(...items.slice(0, 300).map((b, i) => {
+        const opt = document.createElement("div");
+        opt.className = "bs-option";
+        opt.id = `bs-${paneId}-opt-${i}`;
+        opt.setAttribute("role", "option");
+        opt.setAttribute("aria-selected", String(b.name === cur));
+        const name = document.createElement("span");
+        name.className = "bs-opt-name";
+        name.textContent = b.name + (b.local ? "" : " ⇣");
+        opt.appendChild(name);
+        const check = document.createElement("span");
+        check.className = "bs-check";
+        check.setAttribute("aria-hidden", "true");
+        check.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6.5"/></svg>`;
+        opt.appendChild(check);
+        opt.addEventListener("click", () => choose(b.name));
+        opt.addEventListener("mousemove", () => setActive(i));
+        return opt;
+      }));
+      // Open with the current branch pre-highlighted if it survived the filter,
+      // else the first row — so Enter always has a sensible default.
+      const curIdx = items.findIndex((b) => b.name === cur);
+      setActive(curIdx >= 0 ? curIdx : 0);
+    }
+
+    function choose(name) {
+      close();
+      trigger.focus();
+      if (name && name !== currentBranch()) {
+        optimistic = name; // reflect the pick immediately, before the pane rebuilds
+        syncTrigger();
+        load(paneId, name);
+      }
+    }
+
+    function open() {
+      if (isOpen) return;
+      isOpen = true;
+      filterText = "";
+      filter.value = "";
+      renderList();
+      popup.inert = false;
+      positionPopup();
+      trigger.setAttribute("aria-expanded", "true");
+      filter.setAttribute("aria-expanded", "true");
+      requestAnimationFrame(() => { popup.classList.add("open"); filter.focus(); });
+      document.addEventListener("pointerdown", onOutside, true);
+      window.addEventListener("scroll", positionPopup, true);
+      window.addEventListener("resize", positionPopup);
+    }
+
+    function close() {
+      if (!isOpen) return;
+      isOpen = false;
+      popup.classList.remove("open");
+      popup.inert = true;
+      trigger.setAttribute("aria-expanded", "false");
+      filter.setAttribute("aria-expanded", "false");
+      document.removeEventListener("pointerdown", onOutside, true);
+      window.removeEventListener("scroll", positionPopup, true);
+      window.removeEventListener("resize", positionPopup);
+    }
+
+    function onOutside(e) {
+      if (!e.composedPath().includes(root)) close();
+    }
+
+    trigger.addEventListener("click", () => { if (isOpen) close(); else open(); });
+    trigger.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(); }
+    });
+
+    // Close when focus leaves the popup for good — Tab-out, or focus moving into
+    // an iframe when the reviewer clicks pane content — but not while moving
+    // between the filter and the fetch button inside it.
+    popup.addEventListener("focusout", (e) => { if (!popup.contains(e.relatedTarget)) close(); });
+
+    // Options are non-focusable divs, so mousing down on one would otherwise
+    // pull focus off the filter — firing focusout → close() → inert *before*
+    // the click lands, swallowing it. Keeping focus on the filter lets the
+    // click through to choose() (and keeps the combobox's activedescendant model
+    // intact). The keyboard path is unaffected — Enter calls .click() directly.
+    list.addEventListener("mousedown", (e) => e.preventDefault());
+
+    fetchBtn.addEventListener("click", async () => {
+      fetchBtn.disabled = true;
+      fetchBtn.classList.add("spinning");
+      setStatus("Fetching remotes…");
+      try {
+        await api("/api/fetch", { method: "POST" });
+        await refresh(); // re-syncs both dropdowns; re-renders this open list
+        setStatus("");
+      } catch (err) {
+        setStatus(err.message, true);
+      } finally {
+        fetchBtn.disabled = false;
+        fetchBtn.classList.remove("spinning");
+        filter.focus();
+      }
+    });
+
+    filter.addEventListener("input", () => { filterText = filter.value.trim(); renderList(); });
+    filter.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { e.preventDefault(); setActive(activeIndex + 1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); setActive(activeIndex - 1); }
+      else if (e.key === "Home") { e.preventDefault(); setActive(0); }
+      else if (e.key === "End") { e.preventDefault(); setActive(list.querySelectorAll(".bs-option").length - 1); }
+      else if (e.key === "Enter") {
+        e.preventDefault();
+        const opts = list.querySelectorAll(".bs-option");
+        if (activeIndex >= 0 && opts[activeIndex]) opts[activeIndex].click();
+      } else if (e.key === "Escape") {
+        e.preventDefault(); e.stopPropagation(); close(); trigger.focus();
+      }
+    });
+
+    syncTrigger();
+    // Refresh the trigger label from live state; re-render the open list so a
+    // background poll reflects new branches / a newly-ready pane without
+    // disturbing what the reviewer has typed.
+    return { sync() { syncTrigger(); if (isOpen) renderList(); } };
+  }
+
+  const selA = makeBranchSelect(document.querySelector('.branch-select[data-pane="a"]'), "a");
+  const selB = makeBranchSelect(document.querySelector('.branch-select[data-pane="b"]'), "b");
+
+  function syncFrames() {
+    for (const id of ["a", "b"]) {
+      const p = paneById(id);
+      const frame = $("#f" + id);
+      const empty = $("#empty-" + id);
+      $("#sha-" + id).textContent = p?.head?.short ? "@" + p.head.short : "";
+      const url = p?.status === "ready" && p.url ? p.url : "";
+      if (url && frame.dataset.url !== url + (p.head?.sha || "")) {
+        frame.src = url;
+        frame.dataset.url = url + (p.head?.sha || "");
+      }
+      empty.hidden = !!url;
+      if (url) { stopPaneSpin(id); continue; }
+      if (p?.error) setEmpty(id, `Couldn't load pane ${id.toUpperCase()}`, p.error, false, true);
+      else if (p?.status === "installing") setEmpty(id, "Installing dependencies…", "First install on a new branch can take a moment.", true, false);
+      else if (p?.status === "starting") setEmpty(id, "Starting dev server…", "Almost there.", true, false);
+      else if (p?.status === "switching" || p?.status === "new") setEmpty(id, "Checking out branch…", "Setting up the worktree.", true, false);
+      else setEmpty(id, "Nothing loaded yet", `Pick a branch for pane ${id.toUpperCase()} above to preview it here.`, false, false);
+    }
+  }
+
+  async function refresh() {
+    try {
+      state = await api("/api/state");
+      selA.sync();
+      selB.sync();
+      syncFrames();
+    } catch (e) { setStatus(e.message, true); }
+  }
+
+  async function load(id, branch) {
+    if (!branch) return;
+    setStatus(`${id.toUpperCase()} ← ${branch}…`);
+    try {
+      await api("/api/pane", { method: "POST", body: JSON.stringify({ pane: id, branch }) });
+      setStatus("");
+    } catch (e) { setStatus(e.message, true); }
+    refresh();
+  }
+
+  $("#swap").onclick = () => {
+    const a = paneById("a")?.branch, b = paneById("b")?.branch;
+    if (a && b) { load("a", b); load("b", a); }
+  };
+
+  /* --------------------------- tied resizing ----------------------------
+     Both panes always share one width (kept in sync by construction — there
+     is only one value, applied to every `.frame`). The readout always shows
+     pane A's actual rendered width, whether that came from a fixed value or
+     from flexbox "fit" — a ResizeObserver keeps it live either way, so
+     there's never a separate "fit" placeholder state to fall out of sync. */
+  const widthOut = $("#width-out");
+  const MIN_W = 320, MAX_W = 1920;
+  const clampWidth = (px) => Math.min(MAX_W, Math.max(MIN_W, Math.round(px)));
+
+  function applyWidth(px) {
+    const frames = document.querySelectorAll(".frame");
+    for (const f of frames) {
+      if (px > 0) { f.style.width = px + "px"; f.style.flex = "none"; }
+      else { f.style.width = ""; f.style.flex = "1 1 0"; }
+    }
+  }
+  function updateWidthReadout() {
+    if (document.activeElement === widthOut) return; // don't fight the user mid-type
+    const rect = document.querySelector(".frame.a")?.getBoundingClientRect();
+    const px = rect ? Math.round(rect.width) : 0;
+    widthOut.value = px > 0 ? String(px) : "";
+  }
+  applyWidth(0);
+  new ResizeObserver(updateWidthReadout).observe(document.querySelector(".frame.a"));
+  updateWidthReadout();
+
+  widthOut.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") widthOut.blur();
+    else if (e.key === "Escape") { updateWidthReadout(); widthOut.blur(); }
+  });
+  widthOut.addEventListener("blur", () => {
+    const raw = widthOut.value.trim();
+    const n = Number(raw);
+    if (raw !== "" && Number.isFinite(n) && n > 0) applyWidth(clampWidth(n));
+    updateWidthReadout();
+  });
+  for (const b of document.querySelectorAll("[data-w]"))
+    b.onclick = () => applyWidth(Number(b.dataset.w));
+
+  let drag = null;
+  function onHandleDown(e) {
+    const frame = document.querySelector(".frame.a");
+    drag = { startX: e.clientX, startWidth: frame.getBoundingClientRect().width };
+    e.target.setPointerCapture(e.pointerId);
+    e.target.classList.add("dragging");
+  }
+  function onHandleMove(e) {
+    if (!drag) return;
+    applyWidth(clampWidth(drag.startWidth + (e.clientX - drag.startX)));
+  }
+  function onHandleUp(e) {
+    drag = null;
+    e.target.classList.remove("dragging");
+  }
+  for (const h of document.querySelectorAll("[data-handle]")) {
+    h.addEventListener("pointerdown", onHandleDown);
+    h.addEventListener("pointermove", onHandleMove);
+    h.addEventListener("pointerup", onHandleUp);
+    h.addEventListener("pointercancel", onHandleUp);
+    h.addEventListener("dblclick", () => applyWidth(0));
+  }
+
+  /* ----------------------------- view modes -----------------------------
+     Stacked modes (blend/onion) reuse the SAME #fb element pane B already
+     lives in — it's moved on top of #fa, not duplicated — so whatever the
+     reviewer already did inside it (logged in, navigated) is still there.
+     `moveBefore` (Chrome 133+) moves a connected node without destroying
+     its browsing context; falling back to `appendChild` still works, it
+     just reloads the frame, same as a normal iframe re-parent. */
+  const stage = $("#stage"), onionCtl = $("#onion-ctl"), opacity = $("#opacity");
+  const vpA = document.querySelector(".frame.a .vp");
+  const vpB = document.querySelector(".frame.b .vp");
+  const fb = $("#fb");
+  const paneHdA = document.querySelector(".pane-hd.a");
+  const paneHdB = document.querySelector(".pane-hd.b");
+  const bControls = $("#b-controls");
+
+  function moveNode(node, newParent) {
+    if (node.parentElement === newParent) return;
+    if (typeof newParent.moveBefore === "function") newParent.moveBefore(node, null);
+    else newParent.appendChild(node);
+  }
+
+  function setMode(mode) {
+    document.body.dataset.mode = mode;
+    for (const b of document.querySelectorAll(".seg button"))
+      b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+    const stacked = mode !== "side";
+    moveNode(fb, stacked ? vpA : vpB);
+    // frame.b (and its header) is hidden while stacked, so B's branch
+    // picker rides along into frame A's header instead — otherwise there'd
+    // be no way to change B without dropping back to side-by-side. Fades
+    // in/out across the move rather than just snapping to the new spot.
+    const bTarget = stacked ? paneHdA : paneHdB;
+    if (bControls.parentElement !== bTarget) {
+      bControls.classList.add("fade-out");
+      moveNode(bControls, bTarget);
+      requestAnimationFrame(() => requestAnimationFrame(() => bControls.classList.remove("fade-out")));
+    }
+    stage.classList.toggle("stacked", stacked);
+    // The opacity control is fixed to the top corner, not an inline dock
+    // child, so opening it never changes the dock's own width/centering.
+    onionCtl.classList.toggle("visible", mode === "onion");
+    fb.style.mixBlendMode = mode === "blend" ? "difference" : "";
+    fb.style.opacity = mode === "onion" ? String(opacity.value / 100) : "";
+    // Pointer events land on the top (B) frame in stacked modes; that keeps
+    // interaction meaningful since both frames show the same route.
+    fb.style.pointerEvents = stacked ? "auto" : "";
+  }
+  for (const b of document.querySelectorAll(".seg button"))
+    b.onclick = () => setMode(b.dataset.mode);
+  opacity.oninput = () => { fb.style.opacity = String(opacity.value / 100); };
+
+  /* -------------------------- mode-button tooltips -----------------------
+     One shared #tooltip, positioned above whatever [data-tip-title] element
+     is hovered or focused — see the #tooltip CSS comment for why this can't
+     just be a per-button ::after (clipped by .seg's overflow:hidden).
+     Hover is delayed (like a native title) so it doesn't flash on every
+     mouse pass-through; keyboard focus shows it immediately since a tab
+     stop is a deliberate, not incidental, visit.
+     "Tooltip mode": once a tooltip has opened, hovering straight into the
+     next trigger within TOOLTIP_MODE_GRACE reopens instantly instead of
+     waiting out the full delay again — the conventional behavior for a
+     group of related triggers (e.g. Radix's Tooltip.Provider
+     skipDelayDuration), so skimming several mode buttons in a row doesn't
+     re-pay the delay for each one. */
+  const TOOLTIP_DELAY = 1000;
+  const TOOLTIP_MODE_GRACE = 400;
+  const tooltip = $("#tooltip");
+  const tooltipTitle = tooltip.querySelector(".tt-title");
+  const tooltipSub = tooltip.querySelector(".tt-sub");
+  let tooltipShowTimer = null;
+  let tooltipModeTimer = null;
+  let tooltipModeActive = false;
+  function showTooltip(el) {
+    tooltipTitle.textContent = el.dataset.tipTitle;
+    tooltipSub.textContent = el.dataset.tipSub;
+    const rect = el.getBoundingClientRect();
+    tooltip.style.left = rect.left + rect.width / 2 + "px";
+    tooltip.style.top = rect.top - 9 + "px";
+    tooltip.classList.add("open");
+  }
+  function scheduleTooltip(el) {
+    clearTimeout(tooltipShowTimer);
+    clearTimeout(tooltipModeTimer);
+    if (tooltipModeActive) showTooltip(el);
+    else tooltipShowTimer = setTimeout(() => { tooltipModeActive = true; showTooltip(el); }, TOOLTIP_DELAY);
+  }
+  function hideTooltip() {
+    clearTimeout(tooltipShowTimer);
+    tooltip.classList.remove("open");
+    clearTimeout(tooltipModeTimer);
+    tooltipModeTimer = setTimeout(() => { tooltipModeActive = false; }, TOOLTIP_MODE_GRACE);
+  }
+  for (const el of document.querySelectorAll("[data-tip-title]")) {
+    el.setAttribute("aria-describedby", "tooltip");
+    el.addEventListener("mouseenter", () => scheduleTooltip(el));
+    el.addEventListener("mouseleave", hideTooltip);
+    // Only auto-show on a real keyboard visit, not the focus a click also
+    // produces — otherwise dismissing on mousedown (below) would just get
+    // immediately undone by the focus event a click fires right after it.
+    el.addEventListener("focus", () => { if (el.matches(":focus-visible")) showTooltip(el); });
+    el.addEventListener("blur", hideTooltip);
+    // Clicking into the mode the tooltip was explaining should dismiss it
+    // right away — the reviewer already knows what they clicked.
+    el.addEventListener("mousedown", hideTooltip);
+    el.addEventListener("keydown", (e) => { if (e.key === "Escape") hideTooltip(); });
+  }
+  setMode("side");
+
+  /* ------------------------------- events ------------------------------- */
+  (async () => {
+    try {
+      const res = await fetch(DAEMON + "/api/events", { headers: { Authorization: "Bearer " + TOKEN } });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+          const m = /^data: (.*)$/m.exec(chunk);
+          if (!m) continue;
+          const ev = JSON.parse(m[1]);
+          if (ev.type === "pane:installing") setStatus(`${ev.pane.toUpperCase()}: installing…`);
+          else if (ev.type === "pane:starting") setStatus(`${ev.pane.toUpperCase()}: starting server…`);
+          else if (ev.type === "pane:ready" || ev.type === "pane:error") { setStatus(ev.error || "", !!ev.error); refresh(); }
+        }
+      }
+    } catch { /* fall back to polling */ }
+  })();
+
+  refresh();
+  setInterval(refresh, 6000);
+})();
+</script>
+</body>
+</html>

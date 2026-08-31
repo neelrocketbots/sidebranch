@@ -1,0 +1,113 @@
+# Security model
+
+sidebranch runs commands (`git`, your dev command, your install command) on
+behalf of a browser page. That makes its HTTP surface a potential
+remote-code-execution vector if it is reachable by anything other than you.
+The design goal is that **nothing ever leaves the local machine and nothing
+non-local can ever reach in** — enforced by invariants in code, not by
+configuration.
+
+## Invariants (not configurable)
+
+1. **Loopback bind.** The daemon listens on `127.0.0.1` only. There is no
+   flag to bind elsewhere.
+2. **Peer verification.** Every request additionally checks the socket's
+   remote address is loopback (defense in depth against local forwarders).
+3. **Host header allowlist.** Requests whose `Host` is not
+   `localhost`/`127.x`/`[::1]` are rejected with 403. This defeats **DNS
+   rebinding**, where an attacker's domain resolves to 127.0.0.1 so a remote
+   page's requests arrive on a loopback socket — but with the attacker's
+   hostname in `Host`.
+4. **Origin allowlist.** Browser requests carrying an `Origin` are rejected
+   unless that origin is itself a loopback http(s) origin. `Origin: null`
+   (sandboxed iframes, `file://`) is rejected. Non-loopback origins never
+   receive CORS headers, so even the responses they can't be blocked from
+   *requesting* are unreadable to them.
+5. **Bearer token on every API call.** A 256-bit token is generated at
+   daemon start (rotates each run) and required — with constant-time
+   comparison — on all `/api/*` routes, including reads and the event
+   stream.
+6. **No shell, ever.** All child processes use `execFile`/`spawn` with
+   argument arrays. Branch names are validated twice (a conservative
+   allowlist regex, then `git check-ref-format --branch`) before reaching
+   git; names shaped like options (`-D`), paths (`..`), or containing any
+   shell-significant byte are rejected at the API boundary with 400.
+7. **No filesystem routing.** The daemon serves exactly three embedded,
+   fixed-path assets (`widget.js`, `/shell`, and a bundled font used by
+   both) and JSON APIs. Every servable path is a hardcoded route, not
+   derived from the request URL, so there is no traversal surface no
+   matter how many fixed assets that list grows to.
+8. **The user's working tree is read-only territory.** The daemon never
+   runs a mutating git command outside its own worktrees under
+   `~/.sidebranch/`.
+
+## Token delivery
+
+The token is embedded into `widget.js` and `/shell` at response time. Those
+endpoints are unauthenticated by necessity (they *bootstrap* auth), which is
+safe because:
+
+(The bundled font both of them load via `@font-face` is unauthenticated for
+a different, simpler reason: a browser's font fetch cannot carry a custom
+`Authorization` header at all, so gating it by token was never an option.
+It carries no secret and no per-run state, so there's nothing at stake in
+it being fetchable by anything that already clears the loopback/Host/Origin
+gate below.)
+
+- They are only reachable from a loopback socket with a loopback Host
+  (invariants 1–3), so only local software can request them at all.
+- A **remote** page cannot read them: `fetch()` from a non-loopback origin
+  is rejected (invariant 4), and including `<script src="http://localhost:49400/widget.js">`
+  executes the code but cannot read its source — the token lives in a
+  closure, is never attached to `window`, the DOM, storage, cookies, or
+  URLs, and the widget exits before touching the token when the embedding
+  page is not loopback.
+- Local software on your machine could read them — but local software can
+  already run `git` as you directly. sidebranch does not attempt to defend
+  you from your own machine; no local tool can.
+
+## "What if the snippet ships to production?"
+
+Designed to be a non-event, twice over:
+
+1. The widget's first statement checks `location.hostname`; on any
+   non-loopback page it returns before creating DOM, globals, or network
+   traffic. Visitors see nothing and their browser sends nothing.
+2. Even a hand-modified copy that skipped that check would be talking to
+   the *visitor's* `localhost:49400`. If they don't run sidebranch, the
+   request fails. If they do, their daemon rejects the request because the
+   page's Origin (your production domain) is not loopback — before any
+   token check is even consulted.
+
+There is no third party in the path in any scenario: the script src is
+loopback, the API is loopback, and there is no telemetry, no analytics, no
+update check, and no outbound network code anywhere in the package.
+
+## Supply chain
+
+Zero runtime dependencies. The daemon, widget, and shell are Node builtins
+and vanilla browser APIs only. What you audit in this repo is everything
+that runs.
+
+## The shell page
+
+`/shell` is served with a strict CSP (`default-src 'none'` plus loopback
+allowances for frames and fetch), `X-Frame-Options: DENY`, `nosniff`, and
+`no-referrer`. It embeds only loopback iframes and talks only to the daemon.
+
+## Residual risks, stated honestly
+
+- **Your dev/install commands are trusted**, exactly like `npm run dev` is:
+  checking out and building a branch executes that branch's build tooling.
+  Reviewing a malicious PR locally is risky with or without sidebranch;
+  panes give you process isolation per branch but not a sandbox. If a PR is
+  untrusted, read the diff before you build it — with any tool.
+- **`copy` files** (e.g. `.env`) are duplicated into pane worktrees on your
+  own disk under `~/.sidebranch/`. Destroying a pane removes its worktree.
+- **HTTPS dev servers**: an https page cannot load the http widget (mixed
+  content). Run the daemon behind a locally-trusted cert if you need this;
+  do not weaken the invariants to work around it.
+
+## Reporting
+
+Please open a private security advisory rather than a public issue.
