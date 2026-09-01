@@ -76,23 +76,44 @@ export class Manager extends EventEmitter {
     return this.run(async () => {
       await gitops.assertValidBranchName(this.repoRoot, branch);
       let pane = this.panes.get(id);
+      const dir = pane?.dir ?? this.paneDir(id);
+      const dirExists = await fs.access(dir).then(() => true, () => false);
 
-      if (!pane) {
-        const dir = this.paneDir(id);
+      if (!pane || !dirExists) {
         await fs.mkdir(path.dirname(dir), { recursive: true });
         const worktrees = await gitops.listWorktrees(this.repoRoot);
-        const existing = await gitops.findWorktree(worktrees, dir);
+        let existing = await gitops.findWorktree(worktrees, dir);
+        // Registered but gone from disk (a crash, a hand-run rm -rf): without
+        // healing, git runs with a missing cwd and dies with a misleading
+        // "spawn git ENOENT". Prune the stale registration and recreate.
+        if (existing && !dirExists) {
+          this.emitEvent("pane:healing", { pane: id });
+          await gitops.pruneWorktrees(this.repoRoot);
+          existing = null;
+        }
         if (!existing) {
           this.emitEvent("pane:creating", { pane: id, branch });
           await gitops.addWorktree(this.repoRoot, dir, branch);
           await this.copyEnvFiles(dir);
         }
-        pane = {
-          id, dir, branch: null, head: null,
-          server: null, installedHash: null, status: "new", error: null,
-          installLog: [], // raw install stdout/stderr, retained for GET /api/pane/:id/log
-        };
-        this.panes.set(id, pane);
+        if (pane && !dirExists) {
+          // The old server's cwd is gone; so is node_modules. Start over.
+          await pane.server?.stop().catch(() => {});
+          await pane.viewProxy?.stop().catch(() => {});
+          if (pane.server) this.takenPorts.delete(pane.server.port);
+          if (pane.viewProxy) this.takenPorts.delete(pane.viewProxy.port);
+          pane.server = null;
+          pane.viewProxy = null;
+          pane.installedHash = null;
+        }
+        if (!pane) {
+          pane = {
+            id, dir, branch: null, head: null,
+            server: null, installedHash: null, status: "new", error: null,
+            installLog: [], // raw install stdout/stderr, retained for GET /api/pane/:id/log
+          };
+          this.panes.set(id, pane);
+        }
       }
 
       try {

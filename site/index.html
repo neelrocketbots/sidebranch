@@ -345,11 +345,32 @@ h2{font-size:15px;font-weight:400;color:#fff;letter-spacing:.02em;margin-bottom:
 .getcard b{font-weight:400;color:#fff}
 .getcard p{color:var(--muted);font-size:14px;flex:1}
 pre{background:var(--card);border-radius:10px;
-  padding:16px 18px;overflow-x:auto;font-size:14px;line-height:1.75;margin:14px 0}
+  padding:16px 56px 16px 18px;overflow-x:auto;font-size:14px;line-height:1.75;margin:14px 0}
 pre .p{color:var(--muted)}
 pre .g{color:var(--ok)}
 pre .y{color:var(--busy)}
 pre .c{color:#626b74}
+/* ---- code blocks + copy button ---- */
+.code{position:relative}
+.copy{
+  position:absolute;top:12px;right:12px;width:32px;height:32px;
+  display:grid;place-items:center;border-radius:8px;cursor:pointer;
+  background:var(--surface);border:1px solid var(--line-strong);color:var(--muted);
+  opacity:0;transform:translateY(-3px);
+  transition:opacity .18s var(--ease),transform .18s var(--ease),
+             background .15s var(--ease),color .15s var(--ease)}
+.code:hover .copy,.copy:focus-visible{opacity:1;transform:none}
+.copy:hover{background:var(--surface-high);color:#fff}
+.copy:focus-visible{outline:2px solid var(--text);outline-offset:2px}
+/* Both icons share one grid cell and cross-fade, so the swap is a dissolve
+   rather than a reflow. */
+.copy .ic{grid-area:1/1;display:flex;transition:opacity .18s var(--ease),transform .18s var(--ease)}
+.copy .ic-check{opacity:0;transform:scale(.7)}
+.copy.done .ic-copy{opacity:0;transform:scale(.7)}
+.copy.done .ic-check{opacity:1;transform:none}
+/* Nothing to hover with: leave it visible. */
+@media (hover:none){.copy{opacity:1;transform:none}}
+
 .note{font-size:14px;color:var(--muted);margin-top:14px}
 .note a{color:var(--text);border-bottom:1px solid var(--line)}
 .note a:hover{color:#fff}
@@ -377,6 +398,7 @@ footer a:hover{color:#fff}
   #stage *,#cursor{transition-duration:.01s !important;animation:none !important}
   .js .reveal{opacity:1}
   .js .reveal.in{animation:none}
+  .copy,.copy .ic{transition:none}
 }
 </style>
 </head>
@@ -665,6 +687,7 @@ footer a:hover{color:#fff}
 
 <section id="install">
   <h2>Installation</h2>
+  <h3>After adding the chrome extension:</h3>
 <pre><span class="p">$</span> cd your-repo
 <span class="p">$</span> npx sidebranch init     <span class="c"># writes a starter .sidebranch.json</span></pre>
 
@@ -678,26 +701,34 @@ footer a:hover{color:#fff}
   <h3>Start the daemon:</h3>
 <pre><span class="p">$</span> npx sidebranch start    <span class="c"># http://127.0.0.1:49400, loopback only</span></pre>
 
-  <h3>Then get the widget onto the page. Either install the extension&hellip;</h3>
-<pre><span class="c"># Chrome / Edge: chrome://extensions &rarr; Developer mode &rarr; Load unpacked</span>
-<span class="c"># &rarr; select the extension/ folder from the repo</span></pre>
-  <p class="note">That is the whole setup. The extension puts the widget on every
-    <span class="g">localhost</span> app you run the daemon for &mdash; no tag, no HTML change, nothing
-    to remember to strip before shipping. It asks for two origins,
-    <span class="g">http://localhost</span> and <span class="g">http://127.0.0.1</span>, and talks to
-    nothing but your own daemon.</p>
-
-  <h3>&hellip;or add the script tag yourself, dev builds only:</h3>
-<pre>&lt;script src=<span class="g">"http://localhost:49400/widget.js"</span> defer&gt;&lt;/script&gt;</pre>
-  <p class="note">No extension required, and it reaches places the extension can't &mdash; a page
-    served from <span class="g">http://[::1]</span>, which Chrome match patterns cannot express. A page
-    with a strict <span class="g">Content-Security-Policy</span> can block the tag, though; the
-    extension is immune to that.</p>
-
   <p class="note">Then click the pill, pick a branch, and compare. Full configuration reference,
-    recipes for complex apps, and the threat model live in the
-    <a href="https://github.com/cristobalwee/sidebranch#readme" target="_blank" rel="noopener">README</a> and
-    <a href="https://github.com/cristobalwee/sidebranch/blob/main/SECURITY.md" target="_blank" rel="noopener">SECURITY.md</a>.</p>
+    recipes for complex apps, and more live in the
+    <a href="https://github.com/cristobalwee/sidebranch#readme" target="_blank" rel="noopener">README</a>.</p>
+
+  <h3>If you want to install the package yourself instead:</h3>
+<pre><span class="p">$</span> npm install --save-dev sidebranch</pre>
+  <p class="note">Then add the widget to your app, in dev builds only &mdash; gate it however your
+    stack gates dev-only code:</p>
+<pre>&lt;script src=<span class="g">"http://localhost:49400/widget.js"</span> defer&gt;&lt;/script&gt;</pre>
+</section>
+
+<section id="commands">
+  <h2>Commands</h2>
+  <p class="note" style="margin-top:0">Run these from the repo you are reviewing &mdash; sidebranch resolves
+    the project from your working directory, exactly like git.</p>
+
+  <h3>Check the environment, config, and daemon status:</h3>
+<pre><span class="p">$</span> npx sidebranch doctor</pre>
+
+  <h3>Stop the daemon and its pane dev servers:</h3>
+<pre><span class="p">$</span> npx sidebranch stop</pre>
+
+  <h3>Remove pane worktrees when you are done reviewing:</h3>
+<pre><span class="p">$</span> npx sidebranch clean              <span class="c"># all panes, with a prompt</span>
+<span class="p">$</span> npx sidebranch clean --pane a     <span class="c"># just pane A</span></pre>
+
+  <h3>Run on a different port:</h3>
+<pre><span class="p">$</span> npx sidebranch start --port 5000  <span class="c"># match it in the extension options</span></pre>
 </section>
 </main>
 
@@ -768,14 +799,11 @@ footer a:hover{color:#fff}
   for (const sel of [
     "#features h2", "#features .getcard",
     "#install h2", "#install > h3, #install > pre, #install > p",
+    "#commands h2", "#commands > h3, #commands > pre, #commands > p",
   ]) below.push(...document.querySelectorAll(sel));
 
   if ("IntersectionObserver" in window) {
     below.forEach((el) => el.classList.add("reveal"));
-    // On tall viewports some of this is already in view at load; the
-    // observer would reveal it immediately — ahead of the hero. Anything
-    // above the fold joins the load-time stagger instead, queued behind
-    // the hero, and only the truly off-screen rest waits on the observer.
     const fold = innerHeight * 0.9;  // match the observer's -10% rootMargin
     const later = below.filter((el) => {
       if (el.getBoundingClientRect().top >= fold) return true;
@@ -874,6 +902,51 @@ footer a:hover{color:#fff}
     play.setAttribute("aria-pressed", "false");
     play.setAttribute("aria-label", "Play the preview animation");
     requestAnimationFrame(() => stage.classList.remove("snap"));
+  }
+})();
+
+/* ---- copy buttons on every code block ----
+   Injected rather than written into each <pre> by hand: new blocks get one
+   for free, and with JS off the code is still perfectly readable. Shell
+   prompts are stripped on copy so a paste actually runs; trailing #
+   comments are kept, since the shell ignores them anyway. */
+(() => {
+  const COPY = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.6"/><path d="M10.5 3.4A1.6 1.6 0 0 0 9 2H3.6A1.6 1.6 0 0 0 2 3.6V9a1.6 1.6 0 0 0 1.4 1.5"/></svg>';
+  const CHECK = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>';
+
+  for (const pre of document.querySelectorAll("pre")) {
+    const wrap = document.createElement("div");
+    wrap.className = "code";
+    pre.replaceWith(wrap);
+    wrap.append(pre);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copy";
+    btn.setAttribute("aria-label", "Copy to clipboard");
+    btn.innerHTML = '<span class="ic ic-copy">' + COPY + '</span><span class="ic ic-check">' + CHECK + "</span>";
+    wrap.append(btn);
+
+    let revert = null;
+    btn.addEventListener("click", async () => {
+      const text = pre.textContent
+        .split("\n")
+        .map((line) => line.replace(/^\$\s?/, ""))
+        .join("\n")
+        .trim();
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        return; // no clipboard permission — leave the button as it was
+      }
+      btn.classList.add("done");
+      btn.setAttribute("aria-label", "Copied");
+      clearTimeout(revert);
+      revert = setTimeout(() => {
+        btn.classList.remove("done");
+        btn.setAttribute("aria-label", "Copy to clipboard");
+      }, 1600);
+    });
   }
 })();
 </script>

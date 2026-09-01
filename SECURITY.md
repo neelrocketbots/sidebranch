@@ -1,11 +1,8 @@
 # Security model
 
 sidebranch runs commands (`git`, your dev command, your install command) on
-behalf of a browser page. That makes its HTTP surface a potential
-remote-code-execution vector if it is reachable by anything other than you.
-The design goal is that **nothing ever leaves the local machine and nothing
-non-local can ever reach in** — enforced by invariants in code, not by
-configuration.
+behalf of a browser page. As designed, **nothing ever leaves the local machine and nothing
+non-local can ever reach in**.
 
 ## Invariants (not configurable)
 
@@ -127,7 +124,7 @@ Safeguards, mirroring the daemon's own gate:
 - Dev only, local only, and off with `"frameProxy": false` — the compare view
   then falls back to explaining a refused embed instead of hiding it.
 
-## Residual risks, stated honestly
+## Residual risks
 
 - **Your dev/install commands are trusted**, exactly like `npm run dev` is:
   checking out and building a branch executes that branch's build tooling.
@@ -148,21 +145,6 @@ Safeguards, mirroring the daemon's own gate:
   those requests carry the loopback page's own `Origin` and are admitted
   by invariant 4 unchanged — no extension origin is allowlisted, and the
   invariants above are not relaxed for it in any way.
-
-  Concretely, as shipped in `extension/`: its entire permission surface is
-  `storage` plus host permissions for those two origins. It has **no
-  background service worker** — a worker's fetches would carry
-  `chrome-extension://<id>` as their `Origin` and be rejected, and the only
-  way to make one work would be to allowlist a non-loopback origin, so the
-  extension does without. Its options page cannot test its own connection
-  for the same reason, and asks a content script to make the request
-  instead. It stores exactly one thing, the daemon's port, and collects,
-  transmits, and phones home with nothing. It evaluates no code it did not
-  ship: the widget is bundled in the package, which is what MV3's ban on
-  remotely-fetched code requires and what `GET /handshake` exists to make
-  possible. Tests in `test/extension.test.js` assert each of these
-  properties against the manifest and sources, because every one of them is
-  a thing a plausible-looking refactor could quietly undo.
 
 ## Reporting
 

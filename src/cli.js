@@ -322,6 +322,19 @@ async function doctor() {
     }
   } catch { /* not a git repo; already reported above */ }
 
+  try {
+    const root = await gitops.repoRoot(process.cwd());
+    const paneRoot = path.join(projectDataDir(root), "panes") + path.sep;
+    const stale = [];
+    for (const w of await gitops.listWorktrees(root)) {
+      if (!w.path.startsWith(paneRoot)) continue;
+      const gone = await fs.access(w.path).then(() => false, () => true);
+      if (gone) stale.push(path.basename(w.path));
+    }
+    // Informational, not a failure: ensurePane prunes and recreates these.
+    if (stale.length) push("pane worktrees", true, `stale registration for pane ${stale.join(", ")} — auto-healed on next use`);
+  } catch { /* not a git repo; already reported above */ }
+
   for (const c of checks) {
     process.stdout.write(`${c.ok ? " ok " : "FAIL"}  ${c.name}${c.note ? ` — ${c.note}` : ""}\n`);
   }

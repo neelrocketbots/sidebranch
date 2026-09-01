@@ -7,6 +7,16 @@ Notable changes to sidebranch. This project follows
 
 ### Changed
 
+- **A worktree deleted from disk but still registered in git no longer
+  wedges its pane.** That state — left by a crash or a hand-run `rm -rf`
+  under `~/.sidebranch/` — used to fail every retry with a misleading
+  `spawn git ENOENT` (Node's error for a missing cwd). `ensurePane` now
+  prunes the stale registration and recreates the worktree; `doctor` reports
+  the state when it sees it. Fixing this surfaced a second bug: worktree
+  path matching used to fail for deleted directories on macOS tmp paths
+  (the `/var` → `/private/var` symlink), which would have made the heal
+  silently miss.
+
 - Piping CLI output (`sidebranch stop | head -1`) no longer crashes with
   EPIPE when the pipe closes early.
 
