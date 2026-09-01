@@ -1,6 +1,6 @@
 {
   "name": "sidebranch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Framework-agnostic sidecar for reviewing PRs locally: switch branches from an in-page widget and compare worktrees side by side.",
   "type": "module",
   "license": "MIT",
