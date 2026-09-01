@@ -129,6 +129,21 @@ allowances for frames and fetch), `X-Frame-Options: DENY`, `nosniff`, and
   by invariant 4 unchanged — no extension origin is allowlisted, and the
   invariants above are not relaxed for it in any way.
 
+  Concretely, as shipped in `extension/`: its entire permission surface is
+  `storage` plus host permissions for those two origins. It has **no
+  background service worker** — a worker's fetches would carry
+  `chrome-extension://<id>` as their `Origin` and be rejected, and the only
+  way to make one work would be to allowlist a non-loopback origin, so the
+  extension does without. Its options page cannot test its own connection
+  for the same reason, and asks a content script to make the request
+  instead. It stores exactly one thing, the daemon's port, and collects,
+  transmits, and phones home with nothing. It evaluates no code it did not
+  ship: the widget is bundled in the package, which is what MV3's ban on
+  remotely-fetched code requires and what `GET /handshake` exists to make
+  possible. Tests in `test/extension.test.js` assert each of these
+  properties against the manifest and sources, because every one of them is
+  a thing a plausible-looking refactor could quietly undo.
+
 ## Reporting
 
 Please report vulnerabilities privately, not as a public issue:

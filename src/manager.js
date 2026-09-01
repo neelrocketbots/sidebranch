@@ -22,6 +22,9 @@ export class Manager extends EventEmitter {
     super();
     this.repoRoot = repoRoot;
     this.config = config;
+    // Set by the Daemon once it knows its own port. Panes need it only to
+    // answer "would this app let the shell embed it?" — see probeFraming().
+    this.daemonPort = null;
     this.dataDir = projectDataDir(repoRoot);
     this.panes = new Map(); // id -> pane
     this.takenPorts = new Set();
@@ -121,6 +124,7 @@ export class Manager extends EventEmitter {
             env: this.config.env,
             readyPath: this.config.ready.path,
             readyStatuses: this.config.ready.statuses,
+            daemonPort: this.daemonPort,
           });
         }
 
@@ -218,6 +222,7 @@ function paneInfo(p) {
     error: p.error,
     port: p.server?.port ?? null,
     serverState: p.server?.state ?? "stopped",
+    framing: p.server?.framing ?? null,
     url: p.server ? `http://localhost:${p.server.port}/` : null,
   };
 }

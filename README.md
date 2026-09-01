@@ -78,6 +78,40 @@ even run one — rejects requests from non-loopback origins. See SECURITY.md.)
 Then: click the pill → pick a branch → it builds and serves in pane A →
 **Open A** views it, **Compare A/B** opens the split view.
 
+### Or skip the tag: the browser extension
+
+The widget also ships as a Chrome/Edge extension, which puts the same pill on
+every project you run `sidebranch start` in without touching any app's HTML.
+It lives in [`extension/`](extension/) and loads unpacked today:
+
+```
+chrome://extensions → Developer mode → Load unpacked → select extension/
+```
+
+It requests exactly two origins — `http://localhost/*` and
+`http://127.0.0.1/*` — and one permission, `storage`, for a port override on
+its options page. It collects nothing and talks to nothing but your own
+daemon. If no daemon is running, it renders nothing.
+
+Two differences worth knowing before you pick a channel:
+
+- **A strict `Content-Security-Policy` on your dev server can block the script
+  tag.** It cannot block the extension, whose content script isn't subject to
+  the page's CSP (the widget's font is bundled and loaded as binary data
+  specifically so a strict `font-src` can't downgrade it either).
+- **A page served from `http://[::1]:5173` gets no widget from the
+  extension** — Chrome match patterns can't express an IPv6 literal. The tag
+  covers that case, and `http://localhost` reaches the same server.
+
+Everything else is identical, including the compare view, which is served by
+the daemon and needs no extension support at all. See
+[`extension/README.md`](extension/README.md) for the details.
+
+Hidden the widget with **Hide for this session** and want it back? That flag is
+per tab, so a reload won't clear it — click the sidebranch toolbar icon and
+choose **Show the widget here**. (With the script tag, open the app in a new
+tab.)
+
 ## Configuration (`.sidebranch.json`)
 
 ```jsonc
@@ -255,9 +289,27 @@ Scroll/interaction sync between frames is deliberately out of scope — the
 stacked modes cover "did anything move?" and the side-by-side mode covers
 "how does it behave?", without proxying or script injection into your app.
 
-Note: the iframes point directly at the pane dev servers. If your app sends
-`X-Frame-Options`/`frame-ancestors` headers *in development*, relax them
-for loopback or use **Open A** in a separate tab instead.
+### If a pane says it "refuses to be embedded"
+
+The iframes point straight at the pane dev servers, and those are a different
+origin from this page — same-origin is per *port*, so `localhost:49400`
+(the compare view) and `localhost:4410` (a pane) are as foreign to each other
+as two different domains. An app that sends `X-Frame-Options: SAMEORIGIN` or a
+`frame-ancestors` list that doesn't name the daemon will refuse to render here.
+
+sidebranch detects this when the pane starts and tells you which header did it,
+rather than showing a blank rectangle. Two ways out:
+
+- **Stop sending the header in development.** In Next.js that usually means a
+  `headers()` entry in `next.config.js` or a line in middleware — make it
+  conditional on `process.env.NODE_ENV === "production"`. Same idea for a
+  Helmet/`frameguard` setup in Express.
+- **Or don't embed it:** use **Open in new tab** from the widget, or **Open A**
+  from the shell. Everything else about the pane works normally; only the
+  side-by-side and blend views need the frame.
+
+The pane's own dev server is untouched either way — sidebranch never rewrites
+your app's responses.
 
 ## Non-goals and guarantees
 
@@ -320,7 +372,7 @@ sidebranch doctor    environment checks (including daemon status)
 ## Development
 
 ```sh
-node --test "test/*.test.js"
+node --test test/*.test.js
 ```
 
 The suite covers the security gauntlet (token, Host/Origin gating, hostile

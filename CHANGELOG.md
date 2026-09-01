@@ -7,6 +7,19 @@ Notable changes to sidebranch. This project follows
 
 ### Changed
 
+- **The extension no longer injects the widget into the daemon's own `/shell`
+  page.** The compare view is served on loopback, so it matched the content
+  script like any dev server, and got a pill offering to switch branches on top
+  of the view that already does that.
+
+- **CI actually runs on Node 20 now.** The test script was
+  `node --test "test/*.test.js"`, and Node only learned to expand a quoted
+  glob passed to `--test` in v21 — so both Node 20 jobs (Linux and macOS)
+  had been failing on `Could not find '.../test/*.test.js'` without running a
+  single test, while 22 and 24 passed. The glob is now unquoted and expanded
+  by the shell, which works on every supported version. No test or source
+  change was needed: the suite passes 41/41 on Node 20 once it can find it.
+
 - The widget is no longer a string template. `src/assets/widget.js` split
   into `widget-core.js` (the whole UI, defining
   `globalThis.__sidebranchStart({token, port})`) and `boot-tag.js` (the
@@ -26,6 +39,43 @@ Notable changes to sidebranch. This project follows
   at one.
 
 ### Added
+
+- The widget has an **info flyout** (the ⓘ in the toolbar) with the start and
+  stop commands, click-to-copy, this daemon's real port already substituted,
+  and a line naming which delivery channel you are actually looking at —
+  script tag or extension — plus how to switch to the other one.
+
+- **A pane that refuses to be framed now says so.** `/shell` embeds panes from
+  a different origin (different port), so an app sending
+  `X-Frame-Options: SAMEORIGIN` or a restrictive `frame-ancestors` renders as
+  a blank rectangle there, with the browser's explanation trapped in a frame
+  the shell cannot read. The daemon now probes for those headers once per
+  server start and the shell names the header and the fix instead.
+
+- **The extension's toolbar popup**, whose job is undoing "Hide for this
+  session". That flag is `sessionStorage`, so it is per tab, and the only way
+  back used to be opening a new tab — the control you would click to unhide is
+  the widget you just hid.
+
+- **The browser extension** (`extension/`), the widget's second delivery
+  channel: install once and every project you run `sidebranch start` in gets
+  the pill, with no `<script>` tag in the app. MV3, loadable unpacked, and not
+  part of the npm package. Its whole permission surface is `storage` (one
+  integer: a port override) plus host permissions for `http://localhost/*` and
+  `http://127.0.0.1/*`. There is no background service worker — a worker's
+  fetches would carry a `chrome-extension://` origin the daemon rejects — so
+  all daemon traffic, including the options page's connection test, goes
+  through the content script and every invariant in `SECURITY.md` holds
+  unchanged. Two behaviors differ from the tag by nature: a page's strict CSP
+  can't block it, and a page served from `http://[::1]` can't be matched by
+  it.
+
+- `widget-core.js`'s entry point accepts a `fontSource`, so a caller can hand
+  it the font as binary instead of a URL. The tag channel leaves it undefined
+  and is unchanged; the extension passes an ArrayBuffer read from its own
+  package, because a `FontFace` built from a URL is fetched under the *page's*
+  `font-src` CSP and would silently drop the widget to fallback mono on a
+  strict dev server.
 
 - A landing page under `site/`, deployed to GitHub Pages. Not part of the
   npm package (`files` excludes it) and adds no dependencies — one static

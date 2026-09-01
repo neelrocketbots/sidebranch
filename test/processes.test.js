@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 
-import { DevServer, allocatePort } from "../src/processes.js";
+import { DevServer, allocatePort, probeFraming, readFramingHeaders } from "../src/processes.js";
 
 /** GET a small response body over loopback. */
 function getBody(port) {
@@ -73,4 +73,57 @@ test("DevServer with an empty env behaves exactly as before", async () => {
     await server.stop();
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+/**
+ * The compare view frames panes from the daemon's origin, which is a different
+ * port and therefore a different origin. An app that refuses framing turns the
+ * shell into a blank rectangle with the explanation trapped in a console the
+ * shell can't read, so the daemon looks for it and the shell says so instead.
+ */
+test("framing headers are read the way a browser would treat them", () => {
+  const D = 49400;
+  const blocked = (h) => readFramingHeaders(h, D).blocked;
+
+  assert.equal(blocked({}), false);
+  assert.equal(blocked({ "x-frame-options": "SAMEORIGIN" }), true);
+  assert.equal(blocked({ "x-frame-options": "sameorigin" }), true);
+  assert.equal(blocked({ "x-frame-options": "DENY" }), true);
+  // ALLOW-FROM is dead in every current browser; not our job to honor it.
+  assert.equal(blocked({ "x-frame-options": "ALLOW-FROM http://localhost:49400" }), false);
+
+  assert.equal(blocked({ "content-security-policy": "frame-ancestors 'none'" }), true);
+  assert.equal(blocked({ "content-security-policy": "frame-ancestors 'self'" }), true);
+  assert.equal(blocked({ "content-security-policy": "frame-ancestors *" }), false);
+  assert.equal(blocked({ "content-security-policy": `frame-ancestors http://localhost:${D}` }), false);
+  assert.equal(blocked({ "content-security-policy": "frame-ancestors http://localhost:*" }), false);
+  // A frame-ancestors naming somebody else's port is still a refusal for us.
+  assert.equal(blocked({ "content-security-policy": "frame-ancestors http://localhost:3000" }), true);
+  // Other directives must not be mistaken for frame-ancestors.
+  assert.equal(blocked({ "content-security-policy": "default-src 'self'; img-src *" }), false);
+
+  const verdict = readFramingHeaders({ "x-frame-options": "SAMEORIGIN" }, D);
+  assert.equal(verdict.header, "X-Frame-Options");
+  assert.equal(verdict.value, "SAMEORIGIN");
+});
+
+test("probeFraming reports on a live server and never throws", async () => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "X-Frame-Options": "SAMEORIGIN", "Content-Type": "text/html" });
+    res.end("<!doctype html>hi");
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  try {
+    const verdict = await probeFraming({ port, daemonPort: 49400 });
+    assert.equal(verdict.blocked, true);
+    assert.equal(verdict.header, "X-Frame-Options");
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+
+  // Nothing listening: unknown, not "blocked". A dead server is a different
+  // failure and already has its own reporting.
+  const dead = await probeFraming({ port: 49999, daemonPort: 49400 });
+  assert.equal(dead, null);
 });
