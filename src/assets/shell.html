@@ -669,13 +669,31 @@
       const frame = $("#f" + id);
       const empty = $("#empty-" + id);
       $("#sha-" + id).textContent = p?.head?.short ? "@" + p.head.short : "";
-      const url = p?.status === "ready" && p.url ? p.url : "";
+      // Frame the view port (framing headers stripped in transit) when the
+      // daemon provides one. Without it — "frameProxy": false — a pane that
+      // refuses framing gets an explanation, not a blank rectangle.
+      const embedUrl = p?.viewUrl || p?.url;
+      const blocked = p?.status === "ready" && !p?.viewUrl && p.framing?.blocked ? p.framing : null;
+      const url = p?.status === "ready" && embedUrl && !blocked ? embedUrl : "";
       if (url && frame.dataset.url !== url + (p.head?.sha || "")) {
         frame.src = url;
         frame.dataset.url = url + (p.head?.sha || "");
       }
+      if (blocked && frame.dataset.url) { frame.removeAttribute("src"); delete frame.dataset.url; }
       empty.hidden = !!url;
       if (url) { stopPaneSpin(id); continue; }
+      if (blocked) {
+        setEmpty(
+          id,
+          `Pane ${id.toUpperCase()} refuses to be embedded`,
+          `${p.branch} sends ${blocked.header}: ${blocked.value}, which blocks this page from framing it, ` +
+          `and "frameProxy" is off. Re-enable it in .sidebranch.json, stop sending that header in dev, ` +
+          `or open the pane in its own tab.`,
+          false,
+          true
+        );
+        continue;
+      }
       if (p?.error) setEmpty(id, `Couldn't load pane ${id.toUpperCase()}`, p.error, false, true);
       else if (p?.status === "installing") setEmpty(id, "Installing dependencies…", "First install on a new branch can take a moment.", true, false);
       else if (p?.status === "starting") setEmpty(id, "Starting dev server…", "Almost there.", true, false);

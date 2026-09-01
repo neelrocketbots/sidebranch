@@ -77,12 +77,21 @@ src/assets/widget-core.js                 in-page pill/toolbar; runs INSIDE the 
                                            nothing on load — a boot file calls it.
 src/assets/boot-tag.js                    the <script src> channel's boot: carries the
                                            __SIDEBRANCH_* placeholders, appended to core by
-                                           Daemon.serveWidget(). The extension has its own boot
-                                           that calls the same entry point after GET /handshake.
+                                           Daemon.serveWidget(). The extension's own boot lives
+                                           in extension/boot-extension.js and calls the same
+                                           entry point with a token from GET /handshake.
 src/assets/shell.html                     the /shell compare view (side-by-side / blend / onion)
 src/assets/geist-pixel.woff2              bundled UI font for widget.js/shell.html, served at
                                            GET /geist-pixel.woff2 (unauthenticated — see below).
                                            OFL 1.1, NOT MIT — see geist-pixel.LICENSE.txt
+
+extension/manifest.json                   the MV3 browser extension: the widget's second delivery
+extension/boot-extension.js                channel. Not part of the npm package. Ships copies of
+extension/widget-core.js                   widget-core.js + the font; a test fails if they drift.
+extension/options.html|css|js              port override + a connection test routed through a
+                                           content script (see "The browser extension" below)
+scripts/make-icons.js                     offline generator for extension/icons/*.png. Not a build
+                                           step; the PNGs are committed.
 ```
 
 ## Conventions specific to this codebase
@@ -259,6 +268,110 @@ src/assets/geist-pixel.woff2              bundled UI font for widget.js/shell.ht
   "Geist Pixel" family name — check that again if you ever re-derive it
   from a different upstream release.
 
+## The browser extension (`extension/`)
+
+The widget's second delivery channel: same UI, no `<script>` tag in the
+consumer app. It is **not part of the npm package** (`files` excludes it by
+construction, and a test asserts that) and it has no build step — the
+directory *is* the extension, loadable unpacked as it sits.
+`extension/README.md` carries the load/submit instructions and the Web Store
+answers. What matters for changing it:
+
+- **All daemon traffic goes through the content script. There is no
+  background service worker, and adding one is not an option.** This is
+  restated here because it is the rule a refactor is most likely to break for
+  entirely reasonable-sounding reasons ("the fetch belongs in the
+  background", "the options page should test its own connection"). A content
+  script's `fetch` carries the *page's* origin, which `isAllowedOrigin`
+  admits; a service worker's carries `chrome-extension://<id>`, which it
+  rejects on protocol. The only way to make a worker work is to allowlist a
+  non-loopback origin, which is invariant 4 in `SECURITY.md`. So the options
+  page's "Test connection" button messages a content script on a loopback tab
+  and has it make the request — which is also the better test, since it
+  exercises the widget's actual request path.
+- **Three files are deliberate copies** of `src/assets/`: `widget-core.js`,
+  `geist-pixel.woff2`, `geist-pixel.LICENSE.txt`. Same reasoning as `site/`'s
+  font copy — the alternative is a build step, which this repo doesn't have.
+  `test/extension.test.js` asserts they are byte-identical, so the copies
+  cannot silently rot; when core changes, re-copy it. Don't "deduplicate"
+  them with a symlink (Chrome does not follow them out of the package
+  directory) or a build script.
+- **The font is passed to the widget as an ArrayBuffer, not a URL.** A
+  `FontFace` built from a URL is fetched by the *page's* document under the
+  *page's* `font-src` CSP; a strict dev server would silently downgrade the
+  widget to fallback mono. Binary data performs no fetch, so no CSP applies.
+  This is the entire reason `widget-core.js`'s entry point takes a
+  `fontSource` option — the tag channel leaves it undefined and keeps the URL
+  behavior it always had.
+- **`API_VERSION` exists in two places on purpose** — `src/daemon.js` and
+  `extension/boot-extension.js` — because the two halves ship on different
+  clocks (npm vs the Web Store) and will be out of step on real machines.
+  Bump both together; a test enforces they match in the repo. At runtime a
+  mismatch makes the widget refuse to render and log which side to update,
+  rather than half-working against responses it doesn't understand. Keep
+  `/api/*` changes additive so this only fires on a real break.
+- **Port discovery is a default plus an override, never a scan.** 49400,
+  or an integer in `chrome.storage.sync`. Probing a port range from every
+  localhost page the user opens is noisy and reads to a store reviewer
+  exactly like the thing this isn't.
+- **Known gap, documented rather than solved:** Chrome match patterns can't
+  express an IPv6 literal, so a page served from `http://[::1]:5173` gets no
+  widget from the extension. The tag channel still covers it, and
+  `http://localhost` reaches the same server. Don't try to widen the match
+  pattern to cover it.
+- **The extension must not inject into the daemon's own pages.** `/shell` is
+  served on loopback and matches the content script like any dev server, so
+  the boot compares `location.port` against the handshake's port and bails.
+  A pill floating over the compare view, offering to switch the branch the
+  compare view already switches, is noise on top of the thing it duplicates.
+- **The popup exists for exactly one thing: undoing "Hide for this session".**
+  That flag is `sessionStorage`, so it is per tab, and the control that would
+  turn it back off is the widget the reviewer just hid — a dead end with no
+  discoverable way out except opening a new tab. The popup messages the
+  content script (`sidebranch:show`), which re-boots with `force: true`. Two
+  things that make it work and would be easy to undo: core clears
+  `window.__sidebranchLoaded` when it removes the host element, and the boot
+  waits for the element to actually appear before answering, because
+  `__sidebranchStart()` returns well before the daemon has answered and the
+  widget has mounted.
+- **The icons are generated, not drawn** — `node scripts/make-icons.js`
+  rasterizes the same mark `shell.html` and `site/` use. Run it if the mark
+  changes; the PNGs are committed, and the script is not published.
+
+## Framing and the view ports (`src/proxy.js`)
+
+`/shell` (port 49400) frames panes (4410+); same-origin is per port, so an app
+sending `X-Frame-Options: SAMEORIGIN` or a restrictive `frame-ancestors`
+refuses to render there, and the browser explains it only inside the frame,
+where the shell can't read it.
+
+The fix is `FrameProxy`: each pane gets a "view port", a pass-through proxy
+that deletes exactly those two headers, labels the removal in
+`Sidebranch-Removed-Headers`, and changes nothing else. The shell frames
+`viewUrl`; the direct port stays for open-in-tab. Rules that must survive
+refactors:
+
+- **The gate mirrors the daemon's**: loopback bind, loopback peer, loopback
+  Host — enforced on websocket upgrades too, where Host checks classically
+  get forgotten — plus a `Sec-Fetch-Site: cross-site` rejection, which
+  restores the anti-clickjacking protection the stripped header provided.
+- **The target port is fixed at construction.** Nothing request-derived
+  routes anywhere; it can never be an open proxy.
+- **Stream, never buffer; parse nothing.** Byte-identical bodies is a tested
+  property. `requestTimeout` is 0 so SSE/HMR streams aren't reaped.
+- **Spliced sockets drop on `end` as well as `close`/`error`** —
+  `http.Server` sockets allow half-open, so a peer's FIN alone never yields
+  `close`, and forgetting `end` strands upstream sockets and hangs
+  `server.close()`. This was found the hard way; there is a test.
+- **Don't "simplify" to one shared proxy origin.** Mounting panes at paths
+  under one origin breaks apps' absolute URLs (`/_next/...`) and merges pane
+  storage; per-pane ports keep isolation and need no rewriting.
+- `"frameProxy": false` disables it; the shell then falls back to
+  `probeFraming()`'s detect-and-explain path. Both paths stay, both tested.
+
+Why not fix this in the extension instead (`declarativeNetRequest`): it would
+add a store-review-sensitive permission and fix only the extension channel.
+
 ## The landing page (`site/`)
 
 `site/` is the public landing page (GitHub Pages, deployed by
@@ -286,13 +399,24 @@ src/assets/geist-pixel.woff2              bundled UI font for widget.js/shell.ht
 ## Testing
 
 ```sh
-node --test "test/*.test.js"
+node --test test/*.test.js
 ```
 
 Covers the security gauntlet (token, Host/Origin gating, hostile ref
 names), the full worktree lifecycle against real fixture repos, and an
 end-to-end run that boots two panes on two branches and asserts both
 actually serve. Run this after touching anything under `src/*.js`.
+
+**The glob is unquoted on purpose — don't "fix" it back.** Node only
+learned to expand glob patterns passed to `--test` in v21; on Node 20,
+which `engines` still supports and CI still matrices over, `node --test
+"test/*.test.js"` passes the literal string through as a path and dies
+with `Could not find '.../test/*.test.js'` before running a single test.
+Unquoted, the shell expands it and every supported version gets a plain
+list of files. (`node --test test/`, the other obvious rewrite, fails the
+opposite way: Node 22+ resolves a bare directory argument as a module and
+throws `MODULE_NOT_FOUND`. There is no quoted or directory form that
+works on 20 through 24 — the shell glob is the portable one.)
 
 It does **not** exercise `widget.js`/`shell.html`'s in-browser behavior —
 Node's test runner has no DOM. There's no headless-browser dependency in

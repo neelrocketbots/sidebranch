@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sidebranch options</title>
+<link rel="stylesheet" href="options.css">
+<main>
+  <h1>sidebranch</h1>
+  <p class="sub">The widget appears on <code>localhost</code> and <code>127.0.0.1</code> pages when a
+    sidebranch daemon is running for that project. Nothing else is touched.</p>
+
+  <label for="port">Daemon port</label>
+  <p class="hint">Only change this if you start the daemon with <code>--port</code>. Reload the app tab
+    after saving.</p>
+  <div class="row">
+    <input id="port" type="number" min="1024" max="65000" step="1" placeholder="49400" inputmode="numeric">
+    <button id="save" type="button">Save</button>
+    <button id="test" type="button">Test connection</button>
+  </div>
+
+  <p id="status" role="status" class="status"></p>
+</main>
+<script src="options.js"></script>

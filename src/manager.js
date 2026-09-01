@@ -15,6 +15,7 @@ import { EventEmitter } from "node:events";
 import * as gitops from "./gitops.js";
 import { lockfileHash, runInstall } from "./install.js";
 import { allocatePort, DevServer } from "./processes.js";
+import { FrameProxy } from "./proxy.js";
 import { projectDataDir } from "./config.js";
 
 export class Manager extends EventEmitter {
@@ -22,6 +23,9 @@ export class Manager extends EventEmitter {
     super();
     this.repoRoot = repoRoot;
     this.config = config;
+    // Set by the Daemon once it knows its own port. Panes need it only to
+    // answer "would this app let the shell embed it?" — see probeFraming().
+    this.daemonPort = null;
     this.dataDir = projectDataDir(repoRoot);
     this.panes = new Map(); // id -> pane
     this.takenPorts = new Set();
@@ -72,23 +76,44 @@ export class Manager extends EventEmitter {
     return this.run(async () => {
       await gitops.assertValidBranchName(this.repoRoot, branch);
       let pane = this.panes.get(id);
+      const dir = pane?.dir ?? this.paneDir(id);
+      const dirExists = await fs.access(dir).then(() => true, () => false);
 
-      if (!pane) {
-        const dir = this.paneDir(id);
+      if (!pane || !dirExists) {
         await fs.mkdir(path.dirname(dir), { recursive: true });
         const worktrees = await gitops.listWorktrees(this.repoRoot);
-        const existing = await gitops.findWorktree(worktrees, dir);
+        let existing = await gitops.findWorktree(worktrees, dir);
+        // Registered but gone from disk (a crash, a hand-run rm -rf): without
+        // healing, git runs with a missing cwd and dies with a misleading
+        // "spawn git ENOENT". Prune the stale registration and recreate.
+        if (existing && !dirExists) {
+          this.emitEvent("pane:healing", { pane: id });
+          await gitops.pruneWorktrees(this.repoRoot);
+          existing = null;
+        }
         if (!existing) {
           this.emitEvent("pane:creating", { pane: id, branch });
           await gitops.addWorktree(this.repoRoot, dir, branch);
           await this.copyEnvFiles(dir);
         }
-        pane = {
-          id, dir, branch: null, head: null,
-          server: null, installedHash: null, status: "new", error: null,
-          installLog: [], // raw install stdout/stderr, retained for GET /api/pane/:id/log
-        };
-        this.panes.set(id, pane);
+        if (pane && !dirExists) {
+          // The old server's cwd is gone; so is node_modules. Start over.
+          await pane.server?.stop().catch(() => {});
+          await pane.viewProxy?.stop().catch(() => {});
+          if (pane.server) this.takenPorts.delete(pane.server.port);
+          if (pane.viewProxy) this.takenPorts.delete(pane.viewProxy.port);
+          pane.server = null;
+          pane.viewProxy = null;
+          pane.installedHash = null;
+        }
+        if (!pane) {
+          pane = {
+            id, dir, branch: null, head: null,
+            server: null, installedHash: null, status: "new", error: null,
+            installLog: [], // raw install stdout/stderr, retained for GET /api/pane/:id/log
+          };
+          this.panes.set(id, pane);
+        }
       }
 
       try {
@@ -121,7 +146,13 @@ export class Manager extends EventEmitter {
             env: this.config.env,
             readyPath: this.config.ready.path,
             readyStatuses: this.config.ready.statuses,
+            daemonPort: this.daemonPort,
           });
+        }
+        if (!pane.viewProxy && this.config.frameProxy) {
+          const viewPort = await allocatePort(this.config.basePort, this.takenPorts);
+          this.takenPorts.add(viewPort);
+          pane.viewProxy = await new FrameProxy({ port: viewPort, targetPort: pane.server.port }).start();
         }
 
         pane.status = "starting";
@@ -152,8 +183,11 @@ export class Manager extends EventEmitter {
       const pane = this.panes.get(id);
       if (!pane) return;
       await pane.server?.stop();
+      await pane.viewProxy?.stop();
       if (pane.server) this.takenPorts.delete(pane.server.port);
+      if (pane.viewProxy) this.takenPorts.delete(pane.viewProxy.port);
       pane.server = null;
+      pane.viewProxy = null;
       pane.status = "stopped";
       this.emitEvent("pane:stopped", { pane: id });
     });
@@ -174,6 +208,7 @@ export class Manager extends EventEmitter {
     for (const id of this.panes.keys()) {
       const pane = this.panes.get(id);
       await pane.server?.stop().catch(() => {});
+      await pane.viewProxy?.stop().catch(() => {});
     }
   }
 
@@ -218,6 +253,8 @@ function paneInfo(p) {
     error: p.error,
     port: p.server?.port ?? null,
     serverState: p.server?.state ?? "stopped",
+    framing: p.server?.framing ?? null,
     url: p.server ? `http://localhost:${p.server.port}/` : null,
+    viewUrl: p.viewProxy ? `http://localhost:${p.viewProxy.port}/` : null,
   };
 }

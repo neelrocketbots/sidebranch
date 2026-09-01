@@ -44,6 +44,8 @@ export class Daemon {
   constructor({ manager, port = 49400 }) {
     this.manager = manager;
     this.port = port;
+    // The shell frames panes from this origin, so panes are probed against it.
+    this.manager.daemonPort = port;
     this.token = generateToken();
     this.sseClients = new Set();
     this.server = null;

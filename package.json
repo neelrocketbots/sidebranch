@@ -29,7 +29,7 @@
   ],
   "scripts": {
     "start": "node bin/sidebranch.js start",
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node --test test/*.test.js",
     "prepublishOnly": "npm test"
   },
   "keywords": [

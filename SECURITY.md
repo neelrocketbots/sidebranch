@@ -1,11 +1,8 @@
 # Security model
 
 sidebranch runs commands (`git`, your dev command, your install command) on
-behalf of a browser page. That makes its HTTP surface a potential
-remote-code-execution vector if it is reachable by anything other than you.
-The design goal is that **nothing ever leaves the local machine and nothing
-non-local can ever reach in** — enforced by invariants in code, not by
-configuration.
+behalf of a browser page. As designed, **nothing ever leaves the local machine and nothing
+non-local can ever reach in**.
 
 ## Invariants (not configurable)
 
@@ -107,7 +104,27 @@ that runs.
 allowances for frames and fetch), `X-Frame-Options: DENY`, `nosniff`, and
 `no-referrer`. It embeds only loopback iframes and talks only to the daemon.
 
-## Residual risks, stated honestly
+## View ports (the compare view's proxy)
+
+When `frameProxy` is on (the default), each pane gets a second loopback port —
+a pass-through proxy the compare view frames instead of the pane itself. It
+deletes exactly two things from responses: `X-Frame-Options` and the
+`frame-ancestors` CSP directive, and declares what it removed in a
+`Sidebranch-Removed-Headers` header. Bodies are streamed, never parsed or
+rewritten; every other header passes through untouched.
+
+Safeguards, mirroring the daemon's own gate:
+
+- Binds `127.0.0.1` only; non-loopback peers and non-loopback `Host` headers
+  are rejected (on websocket upgrades too).
+- `Sec-Fetch-Site: cross-site` is rejected, so a remote page cannot frame a
+  pane through it — the protection the stripped header was providing.
+- The target is fixed at construction to its own pane's port. Nothing in the
+  request selects where traffic goes, so it cannot proxy to anything else.
+- Dev only, local only, and off with `"frameProxy": false` — the compare view
+  then falls back to explaining a refused embed instead of hiding it.
+
+## Residual risks
 
 - **Your dev/install commands are trusted**, exactly like `npm run dev` is:
   checking out and building a branch executes that branch's build tooling.

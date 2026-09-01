@@ -16,5 +16,5 @@
   // Defensive: if core failed to parse, do nothing rather than throwing an
   // uncaught error into someone else's dev console.
   if (typeof start !== "function") return;
-  start({ token: "__SIDEBRANCH_TOKEN__", port: "__SIDEBRANCH_PORT__" });
+  start({ token: "__SIDEBRANCH_TOKEN__", port: "__SIDEBRANCH_PORT__", channel: "tag" });
 })();

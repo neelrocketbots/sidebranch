@@ -17,7 +17,7 @@ deliberate; don't fork guidance between the two.
   Don't reach for a bundler, a type system, React, Zod, or any
   application-framework pattern in here. `src/assets/widget.js` and
   `src/assets/shell.html` are plain files served to a browser as-is; the
-  only checks that exist are `node --test "test/*.test.js"`.
+  only checks that exist are `node --test test/*.test.js`.
 - **Dogfooding against a consumer app** now means running `sidebranch`
   from *that* app's root (it resolves `repoRoot` from `process.cwd()`,
   exactly like git — see AGENTS.md non-negotiable 4). Install it there

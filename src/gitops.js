@@ -155,14 +155,25 @@ export async function listWorktrees(repo) {
 /**
  * Resolve `dir` through the filesystem (symlinks and all — notably macOS's
  * /var -> /private/var) so paths built from os.tmpdir() compare equal to
- * what `git worktree list` reports. Falls back to a plain path.resolve if
- * the directory doesn't exist (e.g. it was already removed).
+ * what `git worktree list` reports. A deleted directory can't be realpathed
+ * directly, so walk up to the deepest ancestor that still exists, realpath
+ * that, and re-append the missing tail — otherwise a stale registration for
+ * a removed worktree silently fails to match on macOS tmp paths, and the
+ * heal in ensurePane never fires.
  */
 async function resolvedPath(dir) {
-  try {
-    return await fsp.realpath(dir);
-  } catch {
-    return path.resolve(dir);
+  const abs = path.resolve(dir);
+  let base = abs;
+  const missing = [];
+  for (;;) {
+    try {
+      return path.join(await fsp.realpath(base), ...missing.reverse());
+    } catch {
+      const parent = path.dirname(base);
+      if (parent === base) return abs;
+      missing.push(path.basename(base));
+      base = parent;
+    }
   }
 }
 
@@ -193,6 +204,14 @@ export async function addWorktree(repo, dir, branch) {
 
 export async function removeWorktree(repo, dir) {
   await git(repo, ["worktree", "remove", "--force", "--", dir]);
+}
+
+/**
+ * Clear registrations whose directories no longer exist on disk. Metadata
+ * only — prune never touches a working tree, ours or the user's.
+ */
+export async function pruneWorktrees(repo) {
+  await git(repo, ["worktree", "prune"]);
 }
 
 /**

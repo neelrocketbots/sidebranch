@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { Manager } from "../src/manager.js";
+import * as gitops from "../src/gitops.js";
 import { Daemon, API_VERSION } from "../src/daemon.js";
 import { normalize } from "../src/config.js";
 
@@ -250,6 +251,32 @@ test("full loop: two panes on two branches, both actually serving", async () => 
   // The user's own working tree never moved.
   const { stdout } = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
   assert.equal(stdout.trim(), "main");
+});
+
+test("a worktree deleted from disk but still registered is healed, not fatal", async () => {
+  // The state a crash or a hand-run `rm -rf ~/.sidebranch/...` leaves behind.
+  // Without healing, git runs with a missing cwd and every retry dies with a
+  // misleading "spawn git ENOENT".
+  const pane = manager.panes.get("a");
+  const dir = pane.dir;
+  await fs.rm(dir, { recursive: true, force: true });
+  const registered = await gitops.findWorktree(await gitops.listWorktrees(repo), dir);
+  assert.ok(registered, "precondition: the stale registration must exist");
+
+  const res = await api("/api/pane", { method: "POST", body: { pane: "a", branch: "pr/button-color" } });
+  assert.equal(res.status, 200);
+  const info = await res.json();
+  assert.equal(info.status, "ready");
+  const page = await (await fetch(info.url)).text();
+  assert.match(page, /PR/);
+
+  // Healed for real: directory back on disk, no dangling registration.
+  await fs.access(dir);
+  assert.ok(await gitops.findWorktree(await gitops.listWorktrees(repo), dir));
+
+  // And the user's working tree still never moved.
+  const { stdout: head } = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
+  assert.equal(head.trim(), "main");
 });
 
 test("a failing install surfaces a diagnosable error and a full log via the API", async () => {

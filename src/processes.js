@@ -69,8 +69,59 @@ export function waitForReady({ port, path: probePath = "/", statuses = null, tim
   });
 }
 
+/**
+ * Ask a pane's dev server whether it will allow itself to be embedded.
+ *
+ * `/shell` frames panes from a *different* origin — the daemon is on 49400,
+ * panes are on 4410+ — and same-origin is per-port, so any app that sends
+ * `X-Frame-Options: SAMEORIGIN` (or a `frame-ancestors` that excludes the
+ * daemon) refuses to render there. The browser reports that only as a console
+ * message inside the frame, which the shell cannot read cross-origin, so
+ * without this probe the compare view is simply, silently blank.
+ *
+ * Best-effort by construction: `frame-ancestors` is a source-list grammar and
+ * this does not implement it. It answers "will this obviously refuse?", which
+ * is enough to replace a blank rectangle with a sentence naming the header.
+ * Never throws — an unreachable server is not a framing verdict.
+ */
+export function probeFraming({ port, path: probePath = "/", daemonPort }) {
+  return new Promise((resolve) => {
+    const done = (v) => resolve(v);
+    const req = http.get(
+      { host: "127.0.0.1", port, path: probePath, timeout: 3000 },
+      (res) => {
+        res.resume();
+        done(readFramingHeaders(res.headers, daemonPort));
+      }
+    );
+    req.on("timeout", () => { req.destroy(); done(null); });
+    req.on("error", () => done(null));
+  });
+}
+
+export function readFramingHeaders(headers, daemonPort) {
+  const xfo = String(headers["x-frame-options"] ?? "").trim().toLowerCase();
+  if (xfo === "deny" || xfo === "sameorigin") {
+    return { blocked: true, header: "X-Frame-Options", value: xfo.toUpperCase() };
+  }
+  const csp = String(headers["content-security-policy"] ?? "");
+  const directive = /(?:^|;)\s*frame-ancestors\s+([^;]+)/i.exec(csp);
+  if (!directive) return { blocked: false, header: null, value: null };
+  const sources = directive[1].trim().toLowerCase().split(/\s+/);
+  const permits = sources.some((src) => (
+    src === "*" ||
+    src === `http://localhost:${daemonPort}` ||
+    src === `http://127.0.0.1:${daemonPort}` ||
+    src === "http://localhost:*" ||
+    src === "http://127.0.0.1:*"
+  ));
+  return permits
+    ? { blocked: false, header: null, value: null }
+    : { blocked: true, header: "Content-Security-Policy", value: `frame-ancestors ${directive[1].trim()}` };
+}
+
 export class DevServer {
-  constructor({ command, cwd, port, env = {}, readyPath = "/", readyStatuses = null }) {
+  constructor({ command, cwd, port, env = {}, readyPath = "/", readyStatuses = null, daemonPort = null }) {
     if (!isValidPort(port)) throw new Error(`Invalid port ${port}`);
     this.command = command;
     this.cwd = cwd;
@@ -78,10 +129,14 @@ export class DevServer {
     this.env = env;
     this.readyPath = readyPath;
     this.readyStatuses = readyStatuses;
+    this.daemonPort = daemonPort;
     this.child = null;
     this.state = "stopped"; // stopped | starting | ready | crashed
     this.logRing = [];
     this.exitInfo = null;
+    // null until the readiness probe has had a chance to look — "unknown",
+    // which the shell renders as "embed it and see", not as "blocked".
+    this.framing = null;
   }
 
   log(line) {
@@ -157,6 +212,13 @@ export class DevServer {
       throw err;
     }
     if (this.state === "crashed") throw new Error("Dev server exited during startup");
+    // One extra request, once per server start, on a server we have just
+    // proven is answering. Failure here is not a startup failure.
+    this.framing = await probeFraming({
+      port: this.port,
+      path: this.readyPath,
+      daemonPort: this.daemonPort,
+    });
     this.state = "ready";
     return this;
   }

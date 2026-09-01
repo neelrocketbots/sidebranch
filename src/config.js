@@ -25,6 +25,7 @@ export const DEFAULTS = {
   copy: [".env", ".env.local"],    // untracked files copied from main tree into new worktrees
   env: {},                         // extra env vars injected into the pane dev command
   widget: true,                    // set false to make /widget.js serve a no-op
+  frameProxy: true,                // set false to disable the compare view's header-stripping view ports
 };
 
 // Env names sidebranch owns and injects itself (see processes.js). Config
@@ -57,6 +58,7 @@ export function normalize(raw) {
   cfg.copy = cfg.copy.filter((f) => typeof f === "string" && !f.includes("..") && !path.isAbsolute(f));
   cfg.env = normalizeEnv(cfg.env);
   cfg.widget = cfg.widget !== false;
+  cfg.frameProxy = cfg.frameProxy !== false;
   if (cfg.ready.statuses !== null && !Array.isArray(cfg.ready.statuses)) cfg.ready.statuses = null;
   if (typeof cfg.ready.path !== "string" || !cfg.ready.path.startsWith("/")) cfg.ready.path = "/";
   return cfg;
