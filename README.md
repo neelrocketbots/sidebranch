@@ -1,4 +1,6 @@
-# sidebranch
+<img width="1730" height="454" alt="Frame@2x (1)" src="https://github.com/user-attachments/assets/da10cd7e-2db2-4efe-bbe2-77cbb0793bcb" />
+
+---
 
 Review pull requests from inside your running app. sidebranch is a local
 sidecar daemon plus a small in-page widget: pick a branch from a floating
