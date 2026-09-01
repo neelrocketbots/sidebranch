@@ -3,7 +3,7 @@
   "name": "sidebranch",
   "version": "0.1.0",
   "description": "Review PRs from inside your running app: switch branches from an in-page widget backed by a local sidebranch daemon.",
-  "homepage_url": "https://cristobalwee.github.io/sidebranch/",
+  "homepage_url": "https://sidebranch.dev/",
   "minimum_chrome_version": "116",
   "permissions": ["storage"],
   "host_permissions": [

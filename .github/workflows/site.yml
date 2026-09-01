@@ -34,6 +34,13 @@ jobs:
           test -f site/geist-pixel.woff2
           test -f site/geist-pixel.LICENSE.txt
           grep -q "SIL OPEN FONT LICENSE" site/geist-pixel.LICENSE.txt
+      # Actions-mode Pages does not write CNAME for us the way branch-mode
+      # does: if it is missing from the artifact, the custom domain setting is
+      # cleared on deploy and sidebranch.dev starts 404ing. Fail instead.
+      - name: Assert the custom domain ships
+        run: |
+          test -f site/CNAME
+          grep -qx "sidebranch.dev" site/CNAME
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
