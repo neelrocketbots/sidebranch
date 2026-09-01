@@ -7,6 +7,9 @@ Notable changes to sidebranch. This project follows
 
 ### Changed
 
+- Piping CLI output (`sidebranch stop | head -1`) no longer crashes with
+  EPIPE when the pipe closes early.
+
 - **The extension no longer injects the widget into the daemon's own `/shell`
   page.** The compare view is served on loopback, so it matched the content
   script like any dev server, and got a pill offering to switch branches on top
@@ -39,6 +42,16 @@ Notable changes to sidebranch. This project follows
   at one.
 
 ### Added
+
+- **View ports: the compare view now works with apps that refuse framing.**
+  Each pane gets a local pass-through proxy that deletes `X-Frame-Options`
+  and CSP `frame-ancestors` — the two headers that blanked `/shell` for apps
+  sending them — and nothing else. Removals are declared in a
+  `Sidebranch-Removed-Headers` response header; bodies stream through
+  byte-identical; the proxy carries the daemon's loopback/Host gate (upgrades
+  included) and rejects cross-site requests, so remote pages can't frame a
+  pane through it. Off switch: `"frameProxy": false`, which falls back to the
+  detect-and-explain behavior. Direct pane ports are untouched.
 
 - The widget has an **info flyout** (the ⓘ in the toolbar) with the start and
   stop commands, click-to-copy, this daemon's real port already substituted,

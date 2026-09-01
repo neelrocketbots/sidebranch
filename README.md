@@ -126,7 +126,8 @@ tab.)
   "env": {},                            // extra env vars for the pane dev command
                                         //   overrides inherited values; PORT etc. are reserved
   "lockfiles": ["package-lock.json"],   // override the manifest list if needed
-  "widget": true                        // false → /widget.js serves a no-op
+  "widget": true,                       // false → /widget.js serves a no-op
+  "frameProxy": true                    // false → compare view frames panes directly
 }
 ```
 
@@ -289,27 +290,20 @@ Scroll/interaction sync between frames is deliberately out of scope — the
 stacked modes cover "did anything move?" and the side-by-side mode covers
 "how does it behave?", without proxying or script injection into your app.
 
-### If a pane says it "refuses to be embedded"
+### Apps that refuse to be framed
 
-The iframes point straight at the pane dev servers, and those are a different
-origin from this page — same-origin is per *port*, so `localhost:49400`
-(the compare view) and `localhost:4410` (a pane) are as foreign to each other
-as two different domains. An app that sends `X-Frame-Options: SAMEORIGIN` or a
-`frame-ancestors` list that doesn't name the daemon will refuse to render here.
+Panes and the compare view are different ports, so they're different origins —
+an app sending `X-Frame-Options: SAMEORIGIN` (or a restrictive
+`frame-ancestors`) would render as a blank frame here.
 
-sidebranch detects this when the pane starts and tells you which header did it,
-rather than showing a blank rectangle. Two ways out:
-
-- **Stop sending the header in development.** In Next.js that usually means a
-  `headers()` entry in `next.config.js` or a line in middleware — make it
-  conditional on `process.env.NODE_ENV === "production"`. Same idea for a
-  Helmet/`frameguard` setup in Express.
-- **Or don't embed it:** use **Open in new tab** from the widget, or **Open A**
-  from the shell. Everything else about the pane works normally; only the
-  side-by-side and blend views need the frame.
-
-The pane's own dev server is untouched either way — sidebranch never rewrites
-your app's responses.
+So the compare view doesn't frame panes directly. Each pane gets a **view
+port**: a local pass-through proxy that deletes those two framing headers and
+nothing else, and labels what it removed in a `Sidebranch-Removed-Headers`
+response header you can see in devtools. Your app's code, its other headers,
+and the direct pane port (used by **Open in new tab**) are untouched, and your
+production config is never involved. Set `"frameProxy": false` to turn this
+off — a refusing app then gets an explanation in the pane instead of an embed.
+Details and safeguards: [SECURITY.md](SECURITY.md).
 
 ## Non-goals and guarantees
 

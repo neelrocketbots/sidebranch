@@ -669,12 +669,12 @@
       const frame = $("#f" + id);
       const empty = $("#empty-" + id);
       $("#sha-" + id).textContent = p?.head?.short ? "@" + p.head.short : "";
-      // A pane that refuses to be framed must not be given to the iframe at
-      // all: the browser would swap in its own error page, fire load, and
-      // leave the shell showing a blank rectangle it cannot inspect
-      // cross-origin. Say what happened instead.
-      const blocked = p?.status === "ready" && p.framing?.blocked ? p.framing : null;
-      const url = p?.status === "ready" && p.url && !blocked ? p.url : "";
+      // Frame the view port (framing headers stripped in transit) when the
+      // daemon provides one. Without it — "frameProxy": false — a pane that
+      // refuses framing gets an explanation, not a blank rectangle.
+      const embedUrl = p?.viewUrl || p?.url;
+      const blocked = p?.status === "ready" && !p?.viewUrl && p.framing?.blocked ? p.framing : null;
+      const url = p?.status === "ready" && embedUrl && !blocked ? embedUrl : "";
       if (url && frame.dataset.url !== url + (p.head?.sha || "")) {
         frame.src = url;
         frame.dataset.url = url + (p.head?.sha || "");
@@ -686,8 +686,8 @@
         setEmpty(
           id,
           `Pane ${id.toUpperCase()} refuses to be embedded`,
-          `${p.branch} sends ${blocked.header}: ${blocked.value}, which blocks this page from framing it — ` +
-          `the panes and this view are different origins (different ports). Stop sending that header in dev, ` +
+          `${p.branch} sends ${blocked.header}: ${blocked.value}, which blocks this page from framing it, ` +
+          `and "frameProxy" is off. Re-enable it in .sidebranch.json, stop sending that header in dev, ` +
           `or open the pane in its own tab.`,
           false,
           true

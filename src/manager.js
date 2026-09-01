@@ -15,6 +15,7 @@ import { EventEmitter } from "node:events";
 import * as gitops from "./gitops.js";
 import { lockfileHash, runInstall } from "./install.js";
 import { allocatePort, DevServer } from "./processes.js";
+import { FrameProxy } from "./proxy.js";
 import { projectDataDir } from "./config.js";
 
 export class Manager extends EventEmitter {
@@ -127,6 +128,11 @@ export class Manager extends EventEmitter {
             daemonPort: this.daemonPort,
           });
         }
+        if (!pane.viewProxy && this.config.frameProxy) {
+          const viewPort = await allocatePort(this.config.basePort, this.takenPorts);
+          this.takenPorts.add(viewPort);
+          pane.viewProxy = await new FrameProxy({ port: viewPort, targetPort: pane.server.port }).start();
+        }
 
         pane.status = "starting";
         this.emitEvent("pane:starting", { pane: id, branch, port: pane.server.port });
@@ -156,8 +162,11 @@ export class Manager extends EventEmitter {
       const pane = this.panes.get(id);
       if (!pane) return;
       await pane.server?.stop();
+      await pane.viewProxy?.stop();
       if (pane.server) this.takenPorts.delete(pane.server.port);
+      if (pane.viewProxy) this.takenPorts.delete(pane.viewProxy.port);
       pane.server = null;
+      pane.viewProxy = null;
       pane.status = "stopped";
       this.emitEvent("pane:stopped", { pane: id });
     });
@@ -178,6 +187,7 @@ export class Manager extends EventEmitter {
     for (const id of this.panes.keys()) {
       const pane = this.panes.get(id);
       await pane.server?.stop().catch(() => {});
+      await pane.viewProxy?.stop().catch(() => {});
     }
   }
 
@@ -224,5 +234,6 @@ function paneInfo(p) {
     serverState: p.server?.state ?? "stopped",
     framing: p.server?.framing ?? null,
     url: p.server ? `http://localhost:${p.server.port}/` : null,
+    viewUrl: p.viewProxy ? `http://localhost:${p.viewProxy.port}/` : null,
   };
 }

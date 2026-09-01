@@ -107,6 +107,10 @@ test("config normalization clamps and defaults", () => {
   // env defaults to an empty object when absent or malformed
   assert.deepEqual(normalize({ dev: "x" }).env, {});
   assert.deepEqual(normalize({ dev: "x", env: ["not", "a", "map"] }).env, {});
+  // frameProxy defaults on; only an explicit false turns it off
+  assert.equal(normalize({ dev: "x" }).frameProxy, true);
+  assert.equal(normalize({ dev: "x", frameProxy: false }).frameProxy, false);
+  assert.equal(normalize({ dev: "x", frameProxy: "no" }).frameProxy, true);
 });
 
 test("config env: keeps valid vars, drops unsafe ones, preserves empty string", () => {

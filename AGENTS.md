@@ -338,32 +338,39 @@ answers. What matters for changing it:
   rasterizes the same mark `shell.html` and `site/` use. Run it if the mark
   changes; the PNGs are committed, and the script is not published.
 
-## Framing: why panes can refuse to appear in `/shell`
+## Framing and the view ports (`src/proxy.js`)
 
-`/shell` is served from the daemon's origin (`localhost:49400`) and frames
-panes on `localhost:4410+`. Same-origin is per-port, so those are three
-different origins, and any app sending `X-Frame-Options: SAMEORIGIN` — a
-common default in app templates and security middleware — refuses to render
-there. The browser reports this only as a console message *inside* the frame,
-which the shell cannot read cross-origin, so the untreated symptom is a blank
-rectangle with no explanation anywhere the user will look.
+`/shell` (port 49400) frames panes (4410+); same-origin is per port, so an app
+sending `X-Frame-Options: SAMEORIGIN` or a restrictive `frame-ancestors`
+refuses to render there, and the browser explains it only inside the frame,
+where the shell can't read it.
 
-`probeFraming()` in `processes.js` makes one extra request per server start,
-after readiness is already proven, and `paneInfo` carries the verdict to the
-shell, which renders the sentence instead of the blank frame. Rules:
+The fix is `FrameProxy`: each pane gets a "view port", a pass-through proxy
+that deletes exactly those two headers, labels the removal in
+`Sidebranch-Removed-Headers`, and changes nothing else. The shell frames
+`viewUrl`; the direct port stays for open-in-tab. Rules that must survive
+refactors:
 
-- **It is best-effort and must stay honest about that.** `frame-ancestors` is
-  a source-list grammar this does not implement; the check answers "will this
-  obviously refuse?", and an unreachable server yields `null` (unknown), never
-  `blocked`. Unknown must render as "embed it and see", not as an error.
-- **Don't try to fix this by proxying panes through the daemon.** Putting both
-  panes behind one origin would strip the header, and would also merge their
-  cookies and storage — the two panes would share a login and a `localStorage`,
-  which destroys the isolation that makes A/B comparison meaningful.
-- The extension *could* strip the header with `declarativeNetRequest`, which
-  would fix it without touching pane origins. That is a real option and a real
-  permission expansion; it is not implemented, and shouldn't be without a
-  deliberate decision about the store-review cost.
+- **The gate mirrors the daemon's**: loopback bind, loopback peer, loopback
+  Host — enforced on websocket upgrades too, where Host checks classically
+  get forgotten — plus a `Sec-Fetch-Site: cross-site` rejection, which
+  restores the anti-clickjacking protection the stripped header provided.
+- **The target port is fixed at construction.** Nothing request-derived
+  routes anywhere; it can never be an open proxy.
+- **Stream, never buffer; parse nothing.** Byte-identical bodies is a tested
+  property. `requestTimeout` is 0 so SSE/HMR streams aren't reaped.
+- **Spliced sockets drop on `end` as well as `close`/`error`** —
+  `http.Server` sockets allow half-open, so a peer's FIN alone never yields
+  `close`, and forgetting `end` strands upstream sockets and hangs
+  `server.close()`. This was found the hard way; there is a test.
+- **Don't "simplify" to one shared proxy origin.** Mounting panes at paths
+  under one origin breaks apps' absolute URLs (`/_next/...`) and merges pane
+  storage; per-pane ports keep isolation and need no rewriting.
+- `"frameProxy": false` disables it; the shell then falls back to
+  `probeFraming()`'s detect-and-explain path. Both paths stay, both tested.
+
+Why not fix this in the extension instead (`declarativeNetRequest`): it would
+add a store-review-sensitive permission and fix only the extension channel.
 
 ## The landing page (`site/`)
 
