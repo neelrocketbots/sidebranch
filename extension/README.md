@@ -8,12 +8,25 @@ The daemon is still doing all the work. This extension is a loader with a
 credential handshake and an options page; if no daemon is running, it renders
 nothing and the page is untouched.
 
-## Load it unpacked
+## Install it
+
+Published on the Chrome Web Store — **[sidebranch](https://chromewebstore.google.com/detail/sidebranch/ljgndbomggclpkejggdhocihphhhdhig)**
+— which is what most people want; it works in Chrome and Edge.
+
+Then run `sidebranch start` in a project, open its dev server on
+`http://localhost:…`, and the pill appears bottom-right.
+
+## Or load it unpacked
+
+For working on the extension itself, or running ahead of the published build:
 
 1. `chrome://extensions` → enable **Developer mode**.
 2. **Load unpacked** → select this `extension/` directory.
 3. Run `sidebranch start` in a project, open its dev server on
    `http://localhost:…`, and the pill appears bottom-right.
+
+Note that an unpacked copy and the Web Store copy will both inject if both are
+enabled — disable one.
 
 There is no build step — the directory is the extension. Three files
 (`widget-core.js`, `geist-pixel.woff2`, `geist-pixel.LICENSE.txt`) are
@@ -46,10 +59,12 @@ tool's history. That is why there is no service worker here at all, and why
 the options page's **Test connection** button asks a content script to make
 the request instead of making it itself.
 
-## Store submission notes
+## Store listing notes
 
-Answers to the questions the Chrome Web Store listing asks, so they don't have
-to be reconstructed later:
+The listing is live at
+`https://chromewebstore.google.com/detail/sidebranch/ljgndbomggclpkejggdhocihphhhdhig`.
+These are the answers it asks for, kept here so a resubmission doesn't have to
+reconstruct them:
 
 - **Single purpose.** Show a control for switching the local dev server
   between git branches, served by a sidebranch daemon on the user's own
@@ -66,8 +81,10 @@ to be reconstructed later:
 - **Data collected.** None, of any category. No analytics, no telemetry, no
   remote server.
 
-Still needed for a listing, and not in this repo: screenshots, a privacy
-policy URL (a page stating the above), and the $5 one-time developer fee.
+The privacy policy the listing points at is `site/privacy.html`, published at
+https://sidebranch.dev/privacy.html — keep it in step with
+the answers above. Screenshots are maintained in the Web Store dashboard, not
+in this repo.
 
 `manifest.json`'s `version` is the extension's own and moves on the Web
 Store's clock, independent of the npm package's. What must stay in step is

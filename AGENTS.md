@@ -273,9 +273,12 @@ scripts/make-icons.js                     offline generator for extension/icons/
 The widget's second delivery channel: same UI, no `<script>` tag in the
 consumer app. It is **not part of the npm package** (`files` excludes it by
 construction, and a test asserts that) and it has no build step — the
-directory *is* the extension, loadable unpacked as it sits.
-`extension/README.md` carries the load/submit instructions and the Web Store
-answers. What matters for changing it:
+directory *is* the extension, loadable unpacked as it sits, and what is
+zipped and uploaded to the store as it sits. It is **published**, at
+`https://chromewebstore.google.com/detail/sidebranch/ljgndbomggclpkejggdhocihphhhdhig`,
+so a change here ships to installed users on the next store review — bump
+`manifest.json`'s `version` when you make one. `extension/README.md` carries
+the install/load instructions and the Web Store listing answers. What matters for changing it:
 
 - **All daemon traffic goes through the content script. There is no
   background service worker, and adding one is not an option.** This is

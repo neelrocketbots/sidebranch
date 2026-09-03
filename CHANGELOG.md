@@ -9,8 +9,9 @@ Notable changes to sidebranch. This project follows
 
 - **Browser extension** (`extension/`) — a second delivery channel for the
   widget: install once and every project you run `sidebranch start` in gets
-  the pill, with no `<script>` tag in your app. MV3, loadable unpacked, not
-  part of the npm package. Permissions are `storage` (a port override) plus
+  the pill, with no `<script>` tag in your app. MV3, published on the
+  [Chrome Web Store](https://chromewebstore.google.com/detail/sidebranch/ljgndbomggclpkejggdhocihphhhdhig)
+  and also loadable unpacked from `extension/`; not part of the npm package. Permissions are `storage` (a port override) plus
   `http://localhost/*` and `http://127.0.0.1/*`. It has no service worker, so
   all daemon traffic goes through the content script and every invariant in
   `SECURITY.md` still holds. Unlike the tag, it can't be blocked by a page's

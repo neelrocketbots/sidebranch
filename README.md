@@ -22,7 +22,7 @@ with a blend/layer diff to spot visual regressions.
 
 ```
 your app (:5173, your working tree — never touched)
-   └── <script src="http://localhost:49400/widget.js">   ← the widget
+   └── the widget — browser extension, or a <script> tag you add
 sidebranch daemon (127.0.0.1:49400)
    ├── pane A → worktree ~/.sidebranch/…/panes/a → dev server :4410
    ├── pane B → worktree ~/.sidebranch/…/panes/b → dev server :4411
@@ -38,13 +38,39 @@ always clean — nothing to stash, nothing to lose.
 
 ## Quick start
 
+**1. Install the browser extension** —
+**[sidebranch on the Chrome Web Store](https://chromewebstore.google.com/detail/sidebranch/ljgndbomggclpkejggdhocihphhhdhig)**
+(Chrome or Edge). Install it once and every project you run the daemon in gets
+the pill, with no change to any app's HTML.
+
+**2. Start the daemon in your repo:**
+
 ```sh
 cd your-repo
 npx sidebranch init      # writes .sidebranch.json — edit for your stack
 npx sidebranch start     # daemon on http://127.0.0.1:49400
 ```
 
-Add the widget to your app, **dev builds only**:
+**3. Open your dev server** on `http://localhost:…` and the pill appears
+bottom-right. Click it → pick a branch → it builds and serves in pane A.
+**Open A** views it; **Compare A/B** opens the split view.
+
+The extension requests two origins — `http://localhost/*` and
+`http://127.0.0.1/*` — and one permission, `storage`, for a port override on
+its options page (set that if you run `start --port`). It talks to nothing but
+your own daemon, renders nothing if none is running, and is never injected
+into ordinary browsing.
+
+Source lives in [`extension/`](extension/) if you'd rather load it unpacked —
+`chrome://extensions` → Developer mode → **Load unpacked** → select
+`extension/`. See [`extension/README.md`](extension/README.md) for details.
+
+### Or inject it yourself: the script tag
+
+The daemon also serves the widget as a plain script, which is what you want if
+you're on a browser the extension doesn't cover (Firefox, Safari), your dev
+server is on `http://[::1]:5173`, or you'd rather not install an extension at
+all. Add it to your app, **dev builds only**:
 
 ```html
 <script src="http://localhost:49400/widget.js" defer></script>
@@ -74,39 +100,20 @@ If the tag does ship to production, it's harmless: the widget refuses to run
 on non-localhost pages, and a visitor's own daemon — if they run one — rejects
 requests from non-loopback origins. See [SECURITY.md](SECURITY.md).
 
-Then: click the pill → pick a branch → it builds and serves in pane A.
-**Open A** views it; **Compare A/B** opens the split view.
-
-### Or skip the tag: the browser extension
-
-The widget also ships as a Chrome/Edge extension, which puts the same pill on
-every project you run `sidebranch start` in without touching any app's HTML.
-It lives in [`extension/`](extension/) and loads unpacked:
-
-```
-chrome://extensions → Developer mode → Load unpacked → select extension/
-```
-
-It requests two origins — `http://localhost/*` and `http://127.0.0.1/*` — and
-one permission, `storage`, for a port override on its options page. It talks
-to nothing but your own daemon, and renders nothing if none is running.
-
-Two differences from the tag:
+Everything else is identical, including the compare view. Two differences from
+the extension:
 
 - **A strict `Content-Security-Policy` can block the script tag.** It can't
   block the extension, whose content script isn't subject to the page's CSP.
   (The widget's font is bundled and loaded as binary so a strict `font-src`
   can't downgrade it either.)
-- **A page served from `http://[::1]:5173` gets no widget from the
-  extension** — Chrome match patterns can't express an IPv6 literal. Use the
-  tag, or `http://localhost`, which reaches the same server.
+- **A page served from `http://[::1]:5173` gets the widget from the tag but
+  not from the extension** — Chrome match patterns can't express an IPv6
+  literal. `http://localhost` reaches the same server, if you'd rather use
+  the extension.
 
-Everything else is identical, including the compare view. See
-[`extension/README.md`](extension/README.md) for details.
-
-Used **Hide for this session** and want the widget back? The flag is per tab,
-so a reload won't clear it — click the sidebranch toolbar icon and choose
-**Show the widget here**. (With the script tag, open a new tab.)
+With the tag, clearing **Hide for this session** means opening a new tab; the
+toolbar button that undoes it is the extension's.
 
 ## Configuration (`.sidebranch.json`)
 
@@ -254,11 +261,12 @@ Integrate sidebranch (a local PR-review sidecar) into this app. Steps:
    - "copy" lists the untracked files the app needs at runtime,
    - "env" points the pane at the shared singletons and blanks ("") any
      in-repo relative credential paths so SDKs fall back to machine defaults.
-5. Add the widget to the app's HTML/layout, gated to development only:
+5. Only if I tell you I am NOT using the browser extension, add the widget
+   to the app's HTML/layout, gated to development only:
    <script src="http://localhost:49400/widget.js" defer></script>
 6. Tell me exactly which singleton processes I must run once myself before
    using panes, and any one-time credential setup (e.g. cloud ADC login).
-Do not modify my existing dev scripts or app code beyond adding the widget tag.
+Do not modify my existing dev scripts or app code beyond that widget tag.
 ```
 
 ## Compare view
